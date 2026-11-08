@@ -1,0 +1,81 @@
+# Local environment and credentials
+.env
+.env.*
+*.env
+*.env.*
+.envrc
+.envrc.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+*.ppk
+*.pkcs8
+*.p8
+id_rsa
+id_dsa
+id_ecdsa
+id_ecdsa_sk
+id_ed25519
+id_ed25519_sk
+
+# Runtime state and databases
+/bot/data/
+/napcat/data/
+*.db
+*.db-*
+*.sqlite
+*.sqlite-*
+*.sqlite3
+*.sqlite3-*
+
+# Local backups, logs, and temporary files
+*.bak*
+*.backup
+*.backup-*
+*.old
+*.orig
+*.tmp
+*.swp
+*~
+*.log
+*.log.*
+*.qqxlog
+*.mmap3
+logs/
+.cache/
+
+# Python environments and generated files
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# Java and Maven build products
+target/
+*.class
+*.jar
+*.war
+*.ear
+
+# Operating system metadata
+.DS_Store
+Thumbs.db
+
+# Local IDE metadata and caches
+.idea/
+.vscode/
+.vs/
+*.iml
+.classpath
+.project
+.settings/
+.metadata/

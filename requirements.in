@@ -1,0 +1,6 @@
+# Direct runtime dependencies, validated with Python 3.12.
+fastapi==0.162.2
+nonebot-adapter-onebot==2.4.6
+nonebot2[websockets]==2.5.0
+python-dotenv==1.2.4
+uvicorn==0.54.0

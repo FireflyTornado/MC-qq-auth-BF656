@@ -1,0 +1,25 @@
+services:
+  napcat:
+    image: mlikiowa/napcat-docker:v4.18.28
+    container_name: mc-qq-napcat
+    restart: unless-stopped
+
+    environment:
+      MODE: ws
+      WEBUI_TOKEN: ${WEBUI_TOKEN:?WEBUI_TOKEN is required}
+      NAPCAT_UID: "1000"
+      NAPCAT_GID: "1000"
+      TZ: Asia/Shanghai
+
+    ports:
+      # WebUI 管理面板
+      - "127.0.0.1:6099:6099"
+
+      # OneBot WebSocket
+      # 宿主机 13001 -> 容器 3001
+      - "127.0.0.1:13001:3001"
+
+    volumes:
+      - ./data/qq:/app/.config/QQ
+      - ./data/config:/app/napcat/config
+      - ./data/plugins:/app/napcat/plugins

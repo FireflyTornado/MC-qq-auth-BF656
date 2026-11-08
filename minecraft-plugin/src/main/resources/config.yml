@@ -1,0 +1,17 @@
+# MCQQAuth Configuration
+
+# OBSERVE: Only observe authorization status
+# ENFORCE: Enforce authorization (not implemented yet)
+mode: OBSERVE
+
+api:
+  snapshot-url: "https://auth.example.invalid/internal/mc/snapshot"
+  websocket-url: "wss://auth.example.invalid/internal/mc/ws"
+
+sync:
+  connect-on-startup: false
+  reconnect-enabled: false
+
+messages:
+  unauthorized: "请先在QQ群中绑定你的Minecraft游戏ID"
+  revoked: "你的社区绑定已失效"
