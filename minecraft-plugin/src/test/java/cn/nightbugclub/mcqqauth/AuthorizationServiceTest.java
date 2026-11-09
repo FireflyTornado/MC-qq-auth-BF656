@@ -278,13 +278,18 @@ public class AuthorizationServiceTest {
 
         Session session = take(api.sessions);
         take(api.requests).reply(200, snapshot(VERSION, "\"steve\""));
-        take(updates);
-        send(session, "{\"type\":\"auth_updated\",\"version\":\"2\"}");
+        AuthProtocol.Snapshot confirmed = take(updates).snapshot();
+        // The client may reject the message and close the socket before Jetty completes the send.
+        // The rejection log confirms receipt even when the send callback races with disconnect.
+        session.sendText("{\"type\":\"auth_updated\",\"version\":\"2\"}", Callback.NOOP);
         assertTrue(take(logs).contains("通知格式无效"));
+        assertFalse(service.view().ready());
+        assertSame(confirmed, service.view().snapshot());
         take(api.sessions);
         take(api.requests).reply(200, snapshot(VERSION, ""));
         assertTrue(take(logs).contains("同一版本"));
         assertFalse(service.view().ready());
+        assertSame(confirmed, service.view().snapshot());
         assertTrue(service.view().snapshot().allows("Steve"));
         assertTrue(updates.isEmpty());
     }

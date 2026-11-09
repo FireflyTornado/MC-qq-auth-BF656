@@ -4,6 +4,8 @@ import cn.nightbugclub.mcqqauth.AuthorizationService.PlayerStatus;
 import org.bukkit.Material;
 import org.bukkit.Server;
 import org.bukkit.entity.Player;
+import org.bukkit.event.Event;
+import org.bukkit.event.EventException;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
@@ -20,6 +22,7 @@ import org.bukkit.inventory.meta.ItemMeta;
 import org.bukkit.plugin.Plugin;
 import org.bukkit.scheduler.BukkitTask;
 
+import java.lang.reflect.Method;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
@@ -58,6 +61,30 @@ final class ObserveNotice implements Listener {
         return settings.enabled();
     }
 
+    void listenForAuthMeLogin() {
+        var manager = plugin.getServer().getPluginManager();
+        Plugin authMe = manager.getPlugin("AuthMe");
+        if (authMe == null || !authMe.isEnabled()) {
+            return;
+        }
+        try {
+            Class<? extends Event> loginEvent = Class.forName("fr.xephi.authme.events.LoginEvent",
+                    false, authMe.getClass().getClassLoader()).asSubclass(Event.class);
+            Method getPlayer = loginEvent.getMethod("getPlayer");
+            manager.registerEvent(loginEvent, this, EventPriority.MONITOR, (listener, event) -> {
+                if (loginEvent.isInstance(event)) {
+                    try {
+                        onAuthMeLogin((Player) getPlayer.invoke(event));
+                    } catch (ReflectiveOperationException e) {
+                        throw new EventException(e);
+                    }
+                }
+            }, plugin, true);
+        } catch (ReflectiveOperationException | ClassCastException | IllegalArgumentException | LinkageError e) {
+            plugin.getLogger().warning("无法监听 AuthMe 登录成功事件，观察公告仅在入服时安排。");
+        }
+    }
+
     private boolean observing() {
         return !closed && modes.mode() == PluginSettings.Mode.OBSERVE;
     }
@@ -78,9 +105,20 @@ final class ObserveNotice implements Listener {
         }
         Visit visit = new Visit(player);
         visits.put(id, visit);
-        PlayerStatus status = view.get().status(player.getName());
-        visit.awaitingSnapshot = status == PlayerStatus.UNKNOWN;
-        evaluate(visit, status);
+        evaluate(visit, view.get().status(player.getName()));
+    }
+
+    private void onAuthMeLogin(Player player) {
+        if (!observing()) {
+            return;
+        }
+        Visit visit = visits.get(player.getUniqueId());
+        if (visit == null || visit.player != player || visit.noticeShown || visit.authMeLoginHandled) {
+            return;
+        }
+        visit.authMeLoginHandled = true;
+        visit.cancelTask();
+        evaluate(visit, view.get().status(player.getName()));
     }
 
     void onSynchronized() {
@@ -93,13 +131,13 @@ final class ObserveNotice implements Listener {
         }
         for (Visit visit : visits.values()) {
             if (visit.awaitingSnapshot && visit.player.isOnline()) {
-                visit.awaitingSnapshot = false;
                 evaluate(visit, current.status(visit.player.getName()));
             }
         }
     }
 
     private void evaluate(Visit visit, PlayerStatus status) {
+        visit.awaitingSnapshot = status == PlayerStatus.UNKNOWN;
         logStatus(visit.player, status);
         if (status == PlayerStatus.UNAUTHORIZED && enabled() && !onCooldown(visit)) {
             visit.task = plugin.getServer().getScheduler()
@@ -116,7 +154,7 @@ final class ObserveNotice implements Listener {
     private void show(Visit visit) {
         visit.task = null;
         Player player = visit.player;
-        if (!observing() || visits.get(player.getUniqueId()) != visit || !player.isOnline()
+        if (!observing() || visits.get(player.getUniqueId()) != visit || visit.noticeShown || !player.isOnline()
                 || player.getOpenInventory().getType() != InventoryType.CRAFTING || onCooldown(visit)) {
             return;
         }
@@ -134,6 +172,7 @@ final class ObserveNotice implements Listener {
             // Another plugin can run a mode command from InventoryOpenEvent.
             closeInventory(player, candidate);
         } else if (isOpen(player, candidate)) {
+            visit.noticeShown = true;
             lastShown.put(visit.nameKey, nanoTime.getAsLong());
             plugin.getLogger().info("[OBSERVE] Player " + player.getName() + ": notice shown");
         } else {
@@ -224,6 +263,8 @@ final class ObserveNotice implements Listener {
         private final Player player;
         private final String nameKey;
         private boolean awaitingSnapshot;
+        private boolean authMeLoginHandled;
+        private boolean noticeShown;
         private boolean acknowledged;
         private BukkitTask task;
         private NoticeInventory notice;

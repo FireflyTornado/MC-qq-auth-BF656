@@ -1,10 +1,12 @@
 package cn.nightbugclub.mcqqauth;
 
+import fr.xephi.authme.events.LoginEvent;
 import org.bukkit.Bukkit;
 import org.bukkit.Material;
 import org.bukkit.Server;
 import org.bukkit.configuration.file.YamlConfiguration;
 import org.bukkit.entity.Player;
+import org.bukkit.event.EventPriority;
 import org.bukkit.event.inventory.ClickType;
 import org.bukkit.event.inventory.InventoryAction;
 import org.bukkit.event.inventory.InventoryClickEvent;
@@ -20,12 +22,15 @@ import org.bukkit.inventory.ItemFactory;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.meta.ItemMeta;
 import org.bukkit.plugin.Plugin;
+import org.bukkit.plugin.EventExecutor;
+import org.bukkit.plugin.PluginManager;
 import org.bukkit.scheduler.BukkitScheduler;
 import org.bukkit.scheduler.BukkitTask;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.MockedStatic;
+import org.mockito.ArgumentCaptor;
 
 import java.util.ArrayDeque;
 import java.util.List;
@@ -227,6 +232,76 @@ class ObserveNoticeTest {
     }
 
     @Test
+    void retriesOnceAfterAuthMeLoginIfTheFirstOpenWasBlocked() throws Exception {
+        start(true, 0);
+        EventExecutor login = authMeLoginExecutor();
+        Client client = new Client("Steve");
+        client.allowInventoryOpen = false;
+        ready();
+        join(client);
+        runNext();
+        verify(logger, never()).info(contains("notice shown"));
+
+        client.allowInventoryOpen = true;
+        login.execute(notice, new LoginEvent(client.player));
+        login.execute(notice, new LoginEvent(client.player));
+        assertEquals(1, tasks.size());
+        assertEquals(30, tasks.element().delay);
+        runNext();
+        verify(logger).info("[OBSERVE] Player Steve: notice shown");
+        closeByPlayer(client);
+        login.execute(notice, new LoginEvent(client.player));
+        assertTrue(tasks.isEmpty());
+        verify(client.player, times(2)).openInventory(any(Inventory.class));
+    }
+
+    @Test
+    void authMeLoginSkipsPlayerWhoBecameAuthorizedAndWaitsForFreshSnapshotWhenUnknown() throws Exception {
+        EventExecutor login = authMeLoginExecutor();
+        Client bound = new Client("Steve");
+        ready();
+        join(bound);
+        Scheduled initial = tasks.remove();
+        ready("steve");
+        login.execute(notice, new LoginEvent(bound.player));
+        verify(initial.task).cancel();
+        assertNoNotice(bound);
+
+        Client waiting = new Client("Alex");
+        join(waiting);
+        initial = tasks.remove();
+        view = AuthorizationService.View.OFFLINE;
+        login.execute(notice, new LoginEvent(waiting.player));
+        verify(initial.task).cancel();
+        assertNoNotice(waiting);
+        ready("steve");
+        notice.onSynchronized();
+        runNext();
+        verify(waiting.player).openInventory(any(Inventory.class));
+    }
+
+    @Test
+    void authMeLoginCannotDisplayAnOldVisitAfterModeSwitchOrQuit() throws Exception {
+        EventExecutor login = authMeLoginExecutor();
+        Client client = new Client("Steve");
+        ready();
+        join(client);
+        modes.switchTo(PluginSettings.Mode.ENFORCE);
+        notice.clearVisits();
+        runNext();
+        login.execute(notice, new LoginEvent(client.player));
+        modes.switchTo(PluginSettings.Mode.OBSERVE);
+        login.execute(notice, new LoginEvent(client.player));
+        assertNoNotice(client);
+
+        join(client);
+        quit(client);
+        runNext();
+        login.execute(notice, new LoginEvent(client.player));
+        assertNoNotice(client);
+    }
+
+    @Test
     void escClosesWithoutKickOrRepeatEvenWhenCooldownIsZero() {
         start(true, 0);
         Client client = show();
@@ -401,6 +476,19 @@ class ObserveNoticeTest {
         notice = new ObserveNotice(plugin, modes, () -> view, NoticeSettings.read(config), clock::get);
     }
 
+    private EventExecutor authMeLoginExecutor() {
+        PluginManager manager = mock(PluginManager.class);
+        Plugin authMe = mock(Plugin.class);
+        when(server.getPluginManager()).thenReturn(manager);
+        when(manager.getPlugin("AuthMe")).thenReturn(authMe);
+        when(authMe.isEnabled()).thenReturn(true);
+        notice.listenForAuthMeLogin();
+        var executor = ArgumentCaptor.forClass(EventExecutor.class);
+        verify(manager).registerEvent(eq(LoginEvent.class), eq(notice), eq(EventPriority.MONITOR),
+                executor.capture(), eq(plugin), eq(true));
+        return executor.getValue();
+    }
+
     private Client show() {
         Client client = new Client("Steve");
         ready();
@@ -466,6 +554,7 @@ class ObserveNoticeTest {
         private final Player player = mock(Player.class);
         private final InventoryView crafting = inventoryView(player, mock(Inventory.class), InventoryType.CRAFTING);
         private InventoryView open = crafting;
+        private boolean allowInventoryOpen = true;
 
         Client(String name) {
             when(player.getUniqueId()).thenReturn(UUID.randomUUID());
@@ -473,6 +562,9 @@ class ObserveNoticeTest {
             when(player.isOnline()).thenReturn(true);
             when(player.getOpenInventory()).thenAnswer(call -> open);
             when(player.openInventory(any(Inventory.class))).thenAnswer(call -> {
+                if (!allowInventoryOpen) {
+                    return null;
+                }
                 open = inventoryView(player, call.getArgument(0), InventoryType.CHEST);
                 return open;
             });

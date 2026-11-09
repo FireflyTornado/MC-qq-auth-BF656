@@ -59,6 +59,7 @@ public final class MCQQAuthPlugin extends JavaPlugin {
         observeNotice = notice;
         server.getPluginManager().registerEvents(gate, this);
         server.getPluginManager().registerEvents(notice, this);
+        notice.listenForAuthMeLogin();
         if (!validMode) {
             return;
         }

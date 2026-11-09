@@ -56,7 +56,7 @@ TARGET_GROUP_ID=1 MC_API_TOKEN=demo-api-token MC_NOTIFY_TOKEN=demo-notify-token 
 
 另开一个终端运行 `curl --fail http://127.0.0.1:18765/internal/health` 检查进程。需要接入 NapCat、配置 Bot 或编译插件时，按 [部署与构建说明](docs/deployment.md) 操作。
 
-## Minecraft 插件 0.4.0
+## Minecraft 插件 0.4.1
 
 - `OBSERVE` 同步授权名单并记录入服判断。只有成功入服且确认未授权的玩家才会收到可关闭的 QQ 绑定公告。授权服务故障和撤权均允许玩家继续游玩。
 - `ENFORCE` 对新登录执行白名单检查，在服务未就绪时拒绝准入，并按已确认的新名单移出失去授权的在线玩家。
