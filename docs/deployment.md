@@ -179,6 +179,22 @@ Apply 按以下顺序执行。
 
 工具不会回退 Git 或恢复数据库。回到旧源码前应确认它能读取当前数据库结构。迁移可能没有逆向步骤，恢复旧备份可能丢失随后产生的绑定。需要恢复时先停写，保全当前库及最后一份有效备份，再由管理员选择恢复点。重复 Apply 同一个已落盘的 SHA 会停止，需按实际失败阶段恢复。
 
+### NapCat 容器状态说明
+
+升级工具可能输出 `NapCat running none.`。
+
+其中 `running` 表示 Docker 容器处于运行状态，而 `none` 表示该容器没有配置 Docker Healthcheck，并不代表 NapCat 未启动。
+
+对于当前部署，`running none` 属于可接受的容器状态。升级工具还会在涉及服务更新时检查 API 和 OneBot 的实际连接状态。
+
+如需独立确认容器是否正常运行，可以执行：
+
+```bash
+docker inspect mc-qq-napcat --format '{{.State.Status}}'
+```
+
+正常情况下应输出 `running`。
+
 ### 手工升级流程
 
 1. 在 `/opt/mc-qq-auth` 执行 `git fetch origin`。在同一个 Bash 会话中用 `previous_commit=$(git rev-parse HEAD)` 和 `target_commit=$(git rev-parse --verify 'origin/main^{commit}')` 记录两个完整 SHA。核对目标提交的变更和 GitHub CI 结果。
