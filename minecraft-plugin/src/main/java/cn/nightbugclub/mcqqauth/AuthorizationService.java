@@ -378,11 +378,6 @@ public final class AuthorizationService implements AutoCloseable {
         }
 
         @Override
-        public void onWebSocketPing(ByteBuffer payload) {
-            dispatch(this::demand);
-        }
-
-        @Override
         public void onWebSocketPong(ByteBuffer payload) {
             long pong = payload.remaining() == Long.BYTES ? payload.getLong() : -1;
             dispatch(() -> {

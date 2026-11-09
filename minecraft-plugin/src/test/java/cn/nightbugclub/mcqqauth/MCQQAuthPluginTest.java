@@ -53,7 +53,7 @@ class MCQQAuthPluginTest {
         verify(plugins).registerEvents(isA(ObserveNotice.class), eq(plugin));
         verify(plugins, never()).registerEvents(isA(AuthorizationListener.class), eq(plugin));
         CommandSender admin = queryAsAdmin();
-        verify(admin).sendMessage("MCQQAuth v0.3.0");
+        verify(admin).sendMessage("MCQQAuth v0.3.1");
         verify(admin).sendMessage("当前模式：OBSERVE");
         verify(admin).sendMessage("授权服务：未就绪");
         verify(admin).sendMessage("当前行为：允许正常登录，仅观察");

@@ -103,6 +103,25 @@ public class AuthorizationServiceTest {
     }
 
     @Test
+    void respondsToServerPingAndContinuesReceivingNotices() throws Exception {
+        start(TOKEN, 3_000);
+        Session session = take(api.sessions);
+        take(api.requests).reply(200, snapshot(VERSION, ""));
+        take(updates);
+
+        ByteBuffer payload = ByteBuffer.wrap(new byte[]{1, 2, 3, 4});
+        CompletableFuture<Void> sent = new CompletableFuture<>();
+        session.sendPing(payload.asReadOnlyBuffer(),
+                Callback.from(() -> sent.complete(null), sent::completeExceptionally));
+        sent.get(5, SECONDS);
+        assertEquals(payload, take(api.pongs));
+
+        notice(session, VERSION + 1);
+        take(api.requests).reply(200, snapshot(VERSION + 1, ""));
+        assertEquals(VERSION + 1, take(updates).snapshot().version());
+    }
+
+    @Test
     void coalescesNoticesAndDiscardsAResponseBehindAnInFlightUpdate() throws Exception {
         start(TOKEN, 3_000);
         Session session = take(api.sessions);
@@ -343,6 +362,7 @@ public class AuthorizationServiceTest {
         private final BlockingQueue<Session> sessions = new LinkedBlockingQueue<>();
         private final BlockingQueue<Exchange> requests = new LinkedBlockingQueue<>();
         private final BlockingQueue<Integer> closes = new LinkedBlockingQueue<>();
+        private final BlockingQueue<ByteBuffer> pongs = new LinkedBlockingQueue<>();
         private final Server server = new Server();
         private final ServerConnector connector;
 
@@ -364,7 +384,7 @@ public class AuthorizationServiceTest {
                     callback.succeeded();
                     return null;
                 }
-                return new TestSocket(sessions, closes);
+                return new TestSocket(sessions, closes, pongs);
             });
             server.setHandler(new Handler.Abstract() {
                 @Override
@@ -401,7 +421,8 @@ public class AuthorizationServiceTest {
         }
     }
 
-    public record TestSocket(BlockingQueue<Session> sessions, BlockingQueue<Integer> closes)
+    public record TestSocket(BlockingQueue<Session> sessions, BlockingQueue<Integer> closes,
+                             BlockingQueue<ByteBuffer> pongs)
             implements Session.Listener.AutoDemanding {
         @Override
         public void onWebSocketOpen(Session session) {
@@ -412,6 +433,11 @@ public class AuthorizationServiceTest {
         @Override
         public void onWebSocketClose(int statusCode, String reason) {
             closes.add(statusCode);
+        }
+
+        @Override
+        public void onWebSocketPong(ByteBuffer payload) {
+            pongs.add(payload);
         }
     }
 }
