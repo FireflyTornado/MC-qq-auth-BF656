@@ -14,7 +14,7 @@ curl --fail http://127.0.0.1:18765/internal/health
 
 ## GET /internal/mc/snapshot
 
-使用 `Authorization: Bearer <API Token>`。该端点供计划中的 Minecraft 插件获取完整授权名单，可通过 HTTPS 反代提供给受信的异地游戏主机。
+使用 `Authorization: Bearer <API Token>`。Minecraft 插件通过 HTTPS 反代访问该端点，获取完整授权名单。
 
 ```sh
 curl --fail http://127.0.0.1:18765/internal/mc/snapshot \
@@ -61,7 +61,7 @@ curl --fail -X POST http://127.0.0.1:18765/internal/mc/notify \
 
 ## WS /internal/mc/ws
 
-WebSocket 握手使用 API Token。计划中的 Minecraft 插件从受控 WSS 代理接入，用于接收刷新提醒。以下为本机 HTTP Upgrade 请求示例。
+WebSocket 握手使用 API Token。Minecraft 插件从受控 WSS 代理接入，用于接收刷新提醒。以下为本机 HTTP Upgrade 请求示例。
 
 ```http
 GET /internal/mc/ws HTTP/1.1

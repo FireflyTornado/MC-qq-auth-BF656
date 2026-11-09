@@ -276,6 +276,31 @@ cd minecraft-plugin
 mvn -B -ntp verify
 ```
 
-产物为 `minecraft-plugin/target/MCQQAuth-0.1.0.jar`。Spigot API 1.20.1 以 `provided` 作用域参与编译，由兼容的服务端运行时提供。插件默认 `OBSERVE`，当前只显示模式和状态。
+部署产物为 `minecraft-plugin/target/MCQQAuth-0.2.0.jar`。Spigot API 1.20.1 以 `provided` 作用域参与编译，由兼容的服务端提供。JAR 内置并隔离 Jetty、Gson 及所需的日志依赖。Maven 测试通过本机回环地址运行模拟 HTTPS/WSS 服务并生成临时证书，也会模拟 Bukkit 登录、入服和踢出调度。
 
 Spigot API 使用 `1.20.1-R0.1-SNAPSHOT`，本次解析到 `1.20.1-R0.1-20230921.163938-66`。仓库可更新或清理快照，JAR 打包时间也会影响文件字节。若发布需要逐字节复现，应固定已验证的快照构件及其校验值、构建工具和归档时间，并在独立环境中重建比对。
+
+### Minecraft 插件配置
+
+将 JAR 中的默认配置作为 `plugins/MCQQAuth/config.yml` 模板。旧骨架的 `mode`、`sync.connect-on-startup` 和 `sync.reconnect-enabled` 已移除。旧配置应更新示例域名并补齐 Token。插件启用即执行准入检查，配置无效或初次同步未完成时，新玩家会看到服务未就绪提示。
+
+| 配置 | 用途 |
+| --- | --- |
+| `api.snapshot-url` | 默认 `https://auth.bf656.nightbugclub.cn/internal/mc/snapshot`，路径无末尾斜杠。 |
+| `api.websocket-url` | 默认 `wss://auth.bf656.nightbugclub.cn/internal/mc/ws`，路径无末尾斜杠。 |
+| `api.token` | 填写后端的 `MC_API_TOKEN`，两条连接均通过 Bearer 请求头鉴权。实际值只保存在面板服的运行配置中。 |
+| `api.connect-timeout-ms`、`api.request-timeout-ms` | 默认 5000、8000 毫秒，分别限制连接与请求总耗时。 |
+| `sync.reconnect-min-ms`、`sync.reconnect-max-ms` | 默认 1000、30000 毫秒，故障后指数退避，成功同步后恢复初始等待。 |
+| `messages.unauthorized`、`messages.not-ready`、`messages.revoked` | 未授权拒绝、服务未就绪拒绝和撤销踢出提示。 |
+
+连接使用 Java 信任库验证证书链和主机名。WSS 每隔约 15 秒发送 Ping，10 秒内缺少对应 Pong 会进入重连。Ping/Pong 只检查连接活性。插件会在启动和重连后获取完整快照，并按更高版本提醒刷新。客户端最多接收 2 MiB 的快照。若恢复数据库备份导致版本回退，运行中的插件将保持未就绪，需在维护窗口先核实恢复后的名单和版本，再重新启动游戏服。
+
+离线模式仅按服务端收到的游戏名比对授权名单。知道已绑定游戏名的人可以冒用它，QQ 绑定无法证明连接者就是该 QQ 账号的持有人。
+
+### Mohist 面板服维护窗口
+
+1. 在独立测试服确认面板选用 Java 17 和 Mohist 1.20.1。构建并保留 JAR，备份面板上的旧插件和配置。
+2. 停止游戏服，用 `MCQQAuth-0.2.0.jar` 替换 `plugins/` 中的旧版 JAR。从 JAR 中提取默认 `config.yml`，在面板上配置两条公网路径和 `MC_API_TOKEN`，并限制配置访问权限。
+3. 启动后从控制台运行 `mcqqauth`，确认显示已就绪、授权版本和名单人数。核对日志和游戏服到授权域名的 TLS 与 WSS Upgrade 连通情况。
+4. 用测试游戏名验证已授权可进、未绑定被拒、在线执行 `/解绑` 后被踢。模拟连接中断，核对在线玩家保留、新玩家被拒，以及重连后的全量同步和准入恢复。同时检查面板实际加载、登录事件顺序、其他插件的拒绝以及踢出行为。
+5. 验收通过后，在生产维护窗口按相同步骤安装。若需回退，停服后恢复之前备份的插件和配置，再按原服务配置启动。

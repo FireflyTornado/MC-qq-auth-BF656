@@ -1,6 +1,6 @@
 # MC-QQ-Auth
 
-MC-QQ-Auth 面向 Minecraft Java 版离线社区服务器。玩家在指定 QQ 群绑定游戏 ID，服务端将绑定保存为授权名单，通过 HTTP 快照和 WebSocket 更新提醒提供给游戏端。当前 QQ 端与授权 API 已实现，游戏端准入仍在开发中。
+MC-QQ-Auth 面向 Minecraft Java 版离线社区服务器。玩家在指定 QQ 群绑定游戏 ID，Minecraft 插件通过 HTTPS 快照和 WSS 更新提醒获取授权名单，并据此执行游戏端准入。
 
 ## 功能状态
 
@@ -9,15 +9,14 @@ MC-QQ-Auth 面向 Minecraft Java 版离线社区服务器。玩家在指定 QQ �
 | QQ 绑定、查询、解绑的业务逻辑 | 已实现且已测试 | 回归测试覆盖 SQLite 写入、查询、撤销、大小写去重和授权版本更新。 |
 | SQLite 初始化、迁移与授权 API | 已实现且已测试 | 回归测试使用临时数据库和合成配置，覆盖快照、Bearer 鉴权、WebSocket 消息及通知失败后的提交保留。 |
 | 目标 QQ 群成员入群和退群事件记录 | 已实现，真实事件待测试 | 已注册事件处理器，仍需验证 NapCat 对真实入退群事件的投递。 |
-| Minecraft 插件集成 | 开发中 | 骨架可用 JDK 17 和 Maven 构建，提供 `/mcqqauth` 状态命令和默认 `OBSERVE` 配置。实际 Mohist 面板服加载待验证。 |
-| 游戏端 HTTPS/WSS 同步、重连恢复、入服拦截与在线踢出 | 尚未实现 | `OBSERVE` 当前只显示配置的模式和状态。 |
+| Minecraft 插件准入与在线撤销 | 已实现，本地模拟测试 | 覆盖 HTTPS/WSS 同步、重连、登录拦截和在线踢出调度。真实 Mohist 面板服验收待进行。 |
 | 退群自动解绑 | 尚未实现 | 退群事件处理器目前只记录日志。 |
 
 ## 系统架构与技术栈
 
-**QQ 群 → NapCat → NoneBot2 → SQLite → FastAPI → HTTP/WSS → Minecraft 插件（计划接入）**
+**QQ 群 → NapCat → NoneBot2 → SQLite → FastAPI → HTTPS/WSS → Minecraft 插件**
 
-NapCat、Bot 和授权 API 部署在同一台主机，Minecraft 服务端在另一台主机。Bot 写入 SQLite 后通知 FastAPI，游戏端将来通过 HTTPS 拉取完整名单，通过 WSS 得知何时刷新。系统使用 Python 3.12、NoneBot2 / OneBot v11、FastAPI / Uvicorn、SQLite 和 Docker Compose。插件使用 Java 17、Maven 和 Spigot API 1.20.1，目标服务端为 Mohist 1.20.1。详见 [架构说明](docs/architecture.md)。
+NapCat、Bot 和授权 API 部署在同一台主机，Minecraft 服务端在另一台主机。Bot 写入 SQLite 后通知 FastAPI，游戏端通过 HTTPS 拉取完整名单，通过 WSS 得知何时刷新。系统使用 Python 3.12、NoneBot2 / OneBot v11、FastAPI / Uvicorn、SQLite 和 Docker Compose。插件使用 Java 17、Maven 和 Spigot API 1.20.1，目标服务端为 Mohist 1.20.1。详见 [架构说明](docs/architecture.md)。
 
 ## QQ 群使用方式
 

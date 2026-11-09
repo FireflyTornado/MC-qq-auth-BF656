@@ -1,17 +1,18 @@
 # MCQQAuth Configuration
 
-# OBSERVE: Only observe authorization status
-# ENFORCE: Enforce authorization (not implemented yet)
-mode: OBSERVE
-
 api:
-  snapshot-url: "https://auth.example.invalid/internal/mc/snapshot"
-  websocket-url: "wss://auth.example.invalid/internal/mc/ws"
+  snapshot-url: "https://auth.bf656.nightbugclub.cn/internal/mc/snapshot"
+  websocket-url: "wss://auth.bf656.nightbugclub.cn/internal/mc/ws"
+  # 仅在服务器的插件配置填写后端 MC_API_TOKEN。
+  token: ""
+  connect-timeout-ms: 5000
+  request-timeout-ms: 8000
 
 sync:
-  connect-on-startup: false
-  reconnect-enabled: false
+  reconnect-min-ms: 1000
+  reconnect-max-ms: 30000
 
 messages:
-  unauthorized: "请先在QQ群中绑定你的Minecraft游戏ID"
-  revoked: "你的社区绑定已失效"
+  unauthorized: "此 Minecraft 游戏 ID 未获得授权，请先在 QQ 群中绑定。"
+  not-ready: "授权服务暂不可用，请稍后重新连接。"
+  revoked: "你的 Minecraft 游戏 ID 授权已撤销，请在 QQ 群中检查绑定。"
