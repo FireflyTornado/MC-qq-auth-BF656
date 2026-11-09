@@ -1,0 +1,21 @@
+# Candidate template based on the deployment conventions.
+
+[Unit]
+Description=MC-QQ-Auth NoneBot2
+Wants=mc-qq-api.service
+After=network.target mc-qq-api.service
+
+[Service]
+Type=exec
+User=root
+WorkingDirectory=/opt/mc-qq-auth/bot
+ExecStart=/opt/mc-qq-auth/bot/.venv/bin/python bot.py
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=30s
+UMask=0077
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
