@@ -31,7 +31,7 @@ DEFAULTS = MappingProxyType({
     "events.kick.failed": "成员已被移出群聊。Minecraft 授权撤销暂未确认。",
     "commands.bind.usage": "用法：/绑定 Minecraft玩家名",
     "commands.bind.success": "绑定成功！\nMinecraft ID：{mc_name}\n你的绑定记录已保存。",
-    "commands.bind.invalid_name": "游戏 ID 格式不正确。\n仅支持 3～16 位英文字母、数字和下划线。",
+    "commands.bind.invalid_name": "游戏 ID 格式不正确。\n请填写由英文字母、数字或下划线组成的游戏 ID，最多 16 位。",
     "commands.bind.already_bound": "你已经绑定了游戏 ID：{mc_name}\n如需更换，请先使用 /解绑",
     "commands.bind.name_taken": "该游戏 ID 已经被绑定，无法重复绑定。",
     "commands.bind.error": "绑定服务发生错误，请稍后重试",

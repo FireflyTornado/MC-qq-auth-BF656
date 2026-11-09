@@ -83,7 +83,7 @@ def _validate_offline_bindings(conn: sqlite3.Connection) -> None:
         WHERE typeof(group_id) != 'text'
            OR typeof(qq_id) != 'text'
            OR typeof(mc_name) != 'text'
-           OR length(mc_name) NOT BETWEEN 3 AND 16
+           OR length(mc_name) NOT BETWEEN 1 AND 16
            OR mc_name GLOB '*[^A-Za-z0-9_]*'
            OR instr(mc_name, char(0)) != 0
            OR typeof(mc_name_key) != 'text'

@@ -8,8 +8,8 @@ from contextlib import closing
 from database import DB_PATH, MAX_AUTH_VERSION
 
 
-# 标准 Minecraft Java 版用户名格式
-NAME_PATTERN = re.compile(r"^[A-Za-z0-9_]{3,16}$")
+# 离线服允许短名，登录名最多 16 位。
+NAME_PATTERN = re.compile(r"[A-Za-z0-9_]{1,16}")
 
 def update_auth_version(conn: sqlite3.Connection):
     """使用系统时间更新授权版本，保证严格递增。"""

@@ -31,6 +31,9 @@ class AuthProtocolTest {
             "{\"version\":1,\"version\":2,\"active_names\":[]}",
             "{\"version\":1,\"active_names\":null}",
             "{\"version\":1,\"active_names\":{}}",
+            "{\"version\":1,\"active_names\":[\"\"]}",
+            "{\"version\":1,\"active_names\":[\"x-y\"]}",
+            "{\"version\":1,\"active_names\":[\"x\",\"abcdefghijklmnopq\",\"steve\"]}",
             "{\"version\":1,\"active_names\":[\"Steve\"]}",
             "{\"version\":1,\"active_names\":[\"steve\",\"steve\"]}",
             "{\"version\":1,\"active_names\":[42]}",
@@ -38,6 +41,19 @@ class AuthProtocolTest {
     })
     void rejectsInvalidSnapshot(String json) {
         assertThrows(IOException.class, () -> snapshot(json));
+    }
+
+    @Test
+    void authorizesShortAndMaximumLengthNames() throws IOException {
+        var roster = snapshot("""
+                {"version":1,"active_names":["x","ab","abcdefghijklmnop","steve"]}
+                """);
+        assertEquals(Set.of("x", "ab", "abcdefghijklmnop", "steve"), roster.activeNames());
+        assertTrue(roster.allows("X"));
+        assertTrue(roster.allows("Ab"));
+        assertTrue(roster.allows("Abcdefghijklmnop"));
+        assertTrue(roster.allows("Steve"));
+        assertFalse(roster.allows("Abcdefghijklmnopq"));
     }
 
     private static AuthProtocol.Snapshot snapshot(String json) throws IOException {

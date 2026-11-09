@@ -14,8 +14,8 @@ import java.util.Set;
 import java.util.regex.Pattern;
 
 final class AuthProtocol {
-    private static final Pattern PLAYER_NAME = Pattern.compile("[A-Za-z0-9_]{3,16}");
-    private static final Pattern NAME_KEY = Pattern.compile("[a-z0-9_]{3,16}");
+    private static final Pattern PLAYER_NAME = Pattern.compile("[A-Za-z0-9_]{1,16}");
+    private static final Pattern NAME_KEY = Pattern.compile("[a-z0-9_]{1,16}");
     private static final Pattern VERSION = Pattern.compile("0|[1-9][0-9]*");
 
     record Snapshot(long version, Set<String> activeNames) {

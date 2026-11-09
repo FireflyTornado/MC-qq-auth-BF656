@@ -125,6 +125,31 @@ class DatabaseTests(unittest.TestCase):
         self.assertEqual(self.rows("SELECT * FROM pending_bindings"), pending)
         self.assertEqual(self.rows("SELECT * FROM offline_bindings"), [])
 
+    def test_short_and_maximum_length_names_can_bind(self):
+        database.init_database()
+        for qq_id, name in enumerate(("X", "Ab", "Abcdefghijklmnop")):
+            qq_id = str(qq_id)
+            self.assertEqual(binding_service.bind_player("group", qq_id, name), ("success", name))
+            self.assertEqual(binding_service.bind_player("group", "other", name.lower()), ("name_taken", None))
+
+        for name in ("", "Abcdefghijklmnopq"):
+            self.assertEqual(binding_service.bind_player("group", "other", name), ("invalid_name", None))
+
+        database.init_database()
+        self.assertEqual(self.rows("SELECT mc_name_key FROM offline_bindings ORDER BY id"), [
+            ("x",), ("ab",), ("abcdefghijklmnop",),
+        ])
+
+    def test_database_validation_rejects_legacy_long_binding(self):
+        database.init_database()
+        name = "Abcdefghijklmnopq"
+        self.rows(BINDING_INSERT, ("group", "qq", name, name.lower(), "ACTIVE"))
+
+        with self.assertRaisesRegex(database.MigrationError, "invalid name"):
+            database.init_database()
+
+        self.assertEqual(binding_service.get_binding("group", "qq"), name)
+
     def test_keep_existing_offline_rows_indexes_and_version(self):
         self.fixture(AUTH_TABLE + OFFLINE_TABLE + ACTIVE_INDEXES)
         self.rows("INSERT INTO auth_state VALUES (1, ?)", (1_800_000_000_000,))
