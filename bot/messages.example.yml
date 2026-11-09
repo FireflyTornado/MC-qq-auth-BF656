@@ -4,20 +4,20 @@
 
 events:
   join:
-    enabled: true
+    enabled: false
     # {member} 会生成对新成员的 QQ @，可省略。
     message: |-
       {member} 欢迎加入！请用 /绑定 游戏ID 或 /bind 游戏ID 绑定 Minecraft 游戏 ID。
       发送 /帮助 或 /help 查看指令。
   leave:
     # 关闭后仍会撤销离群成员的绑定。
-    enabled: true
+    enabled: false
     revoked: "成员已退出群聊。Minecraft 授权已自动撤销。"
     no_binding: "成员已退出群聊。"
     failed: "成员已退出群聊。Minecraft 授权撤销暂未确认。"
   kick:
     # 关闭后仍会撤销被移出成员的绑定。
-    enabled: true
+    enabled: false
     revoked: "成员已被移出群聊。Minecraft 授权已自动撤销。"
     no_binding: "成员已被移出群聊。"
     failed: "成员已被移出群聊。Minecraft 授权撤销暂未确认。"
@@ -96,21 +96,23 @@ commands:
 info:
   # 图片上按单行显示，超过可用宽度时截断。
   title: "MC-QQ-Auth"
+  # 旧版兼容项。新版页脚显示 Bot 服务器的当地时间。
   footer: "MC-QQ-Auth"
   labels:
+    # bot、auth_version、last_reconcile 和 last_notice 为旧版兼容项。
     bot: "Bot"
     onebot: "OneBot"
     api: "FastAPI"
     database: "SQLite"
-    system_uptime: "System"
-    bot_uptime: "Bot process"
-    connection_uptime: "OneBot connection"
-    os: "Operating system"
+    system_uptime: "系统"
+    bot_uptime: "Bot 进程"
+    connection_uptime: "OneBot 连接"
+    os: "操作系统"
     python: "Python"
-    cpu_cores: "Logical CPU cores"
-    memory: "Memory usage"
-    disk: "Disk usage"
+    cpu_cores: "逻辑核心"
+    memory: "内存"
+    disk: "磁盘"
     auth_version: "Authorization version"
-    bindings: "Active bindings"
+    bindings: "有效绑定"
     last_reconcile: "Last member reconciliation"
     last_notice: "Last authorization notice"

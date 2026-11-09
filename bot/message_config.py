@@ -16,16 +16,16 @@ MAX_FILE_BYTES = 64 * 1024
 MAX_TEXT_LENGTH = 1000
 
 DEFAULTS = MappingProxyType({
-    "events.join.enabled": True,
+    "events.join.enabled": False,
     "events.join.message": (
         "{member} 欢迎加入！请用 /绑定 游戏ID 或 /bind 游戏ID 绑定 Minecraft 游戏 ID。\n"
         "发送 /帮助 或 /help 查看指令。"
     ),
-    "events.leave.enabled": True,
+    "events.leave.enabled": False,
     "events.leave.revoked": "成员已退出群聊。Minecraft 授权已自动撤销。",
     "events.leave.no_binding": "成员已退出群聊。",
     "events.leave.failed": "成员已退出群聊。Minecraft 授权撤销暂未确认。",
-    "events.kick.enabled": True,
+    "events.kick.enabled": False,
     "events.kick.revoked": "成员已被移出群聊。Minecraft 授权已自动撤销。",
     "events.kick.no_binding": "成员已被移出群聊。",
     "events.kick.failed": "成员已被移出群聊。Minecraft 授权撤销暂未确认。",
@@ -67,23 +67,20 @@ DEFAULTS = MappingProxyType({
     "info.labels.onebot": "OneBot",
     "info.labels.api": "FastAPI",
     "info.labels.database": "SQLite",
-    "info.labels.system_uptime": "System",
-    "info.labels.bot_uptime": "Bot process",
-    "info.labels.connection_uptime": "OneBot connection",
-    "info.labels.os": "Operating system",
+    "info.labels.system_uptime": "系统",
+    "info.labels.bot_uptime": "Bot 进程",
+    "info.labels.connection_uptime": "OneBot 连接",
+    "info.labels.os": "操作系统",
     "info.labels.python": "Python",
-    "info.labels.cpu_cores": "Logical CPU cores",
-    "info.labels.memory": "Memory usage",
-    "info.labels.disk": "Disk usage",
+    "info.labels.cpu_cores": "逻辑核心",
+    "info.labels.memory": "内存",
+    "info.labels.disk": "磁盘",
     "info.labels.auth_version": "Authorization version",
-    "info.labels.bindings": "Active bindings",
+    "info.labels.bindings": "有效绑定",
     "info.labels.last_reconcile": "Last member reconciliation",
     "info.labels.last_notice": "Last authorization notice",
 })
 SECTIONS = {key.rsplit(".", depth)[0] for key in DEFAULTS for depth in range(1, key.count(".") + 1)}
-INFO_LABEL_KEYS = {
-    label: key for key, label in DEFAULTS.items() if key.startswith("info.labels.")
-}
 
 FIELDS = {
     "events.join.message": {"member"},
@@ -112,10 +109,6 @@ class MessageConfig:
         value = self.values[key]
         assert isinstance(value, str)
         return value
-
-    def info_label(self, label: str) -> str:
-        key = INFO_LABEL_KEYS.get(label)
-        return self.info_text(key) if key else label
 
     def info_text(self, key: str) -> str:
         return self.text(key).replace("{{", "{").replace("}}", "}")

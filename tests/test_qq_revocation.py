@@ -9,7 +9,7 @@ import unittest
 from contextlib import chdir, closing
 from io import BytesIO
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, call, patch
 
 import nonebot
 from PIL import Image
@@ -72,6 +72,7 @@ class QQRevocationTests(unittest.IsolatedAsyncioTestCase):
         self.enterContext(patch.object(database, "DB_PATH", self.path))
         self.enterContext(patch.object(message_config, "MESSAGES", message_config.MessageConfig(message_config.DEFAULTS)))
         self.enterContext(patch.object(runtime_status, "_outcomes", {}))
+        self.enterContext(patch.object(self.status, "get_avatar", return_value=None))
         notify_patch = patch.object(binding_service, "notify_auth_updated", return_value=True)
         self.notify = notify_patch.start()
         self.addCleanup(notify_patch.stop)
@@ -100,6 +101,9 @@ class QQRevocationTests(unittest.IsolatedAsyncioTestCase):
     def assert_notice(self, expected):
         self.send_group.assert_awaited_once_with(group_id=GROUP, message=Message(expected))
 
+    def enable_notices(self, *events):
+        self.enterContext(self.configure("events:\n" + "".join(f"  {event}: {{enabled: true}}\n" for event in events)))
+
     def version(self):
         with closing(sqlite3.connect(self.path)) as conn:
             return conn.execute("SELECT version FROM auth_state").fetchone()[0]
@@ -118,6 +122,7 @@ class QQRevocationTests(unittest.IsolatedAsyncioTestCase):
         return patch.object(self.bot, "call_api", AsyncMock(side_effect=api))
 
     async def test_leave_revokes_only_target_group_and_notifies_after_commit(self):
+        self.enable_notices("leave", "join")
         self.bind()
         self.bind(name="Other", group=OTHER_GROUP)
         old_version = self.version()
@@ -142,6 +147,7 @@ class QQRevocationTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn(command, welcome.extract_plain_text())
 
     async def test_kick_revokes_the_member_not_the_operator(self):
+        self.enable_notices("kick")
         self.bind()
         self.bind(MEMBER, "Alex")
         self.notify.reset_mock()
@@ -152,6 +158,7 @@ class QQRevocationTests(unittest.IsolatedAsyncioTestCase):
         self.assert_notice("成员已被移出群聊。Minecraft 授权已自动撤销。")
 
     async def test_other_group_and_unbound_departures_are_noops(self):
+        self.enable_notices("leave")
         self.bind()
         self.notify.reset_mock()
         version = self.version()
@@ -164,6 +171,7 @@ class QQRevocationTests(unittest.IsolatedAsyncioTestCase):
         self.notify.assert_not_called()
 
     async def test_repeated_departure_does_not_touch_new_binding(self):
+        self.enable_notices("leave")
         self.bind()
         event = departure()
         self.notify.reset_mock()
@@ -206,6 +214,7 @@ class QQRevocationTests(unittest.IsolatedAsyncioTestCase):
         self.send_group.assert_not_awaited()
 
     async def test_failed_group_message_does_not_undo_or_repeat_revocation(self):
+        self.enable_notices("leave")
         self.bind()
         version = self.version()
         self.notify.reset_mock()
@@ -225,6 +234,7 @@ class QQRevocationTests(unittest.IsolatedAsyncioTestCase):
         self.send_group.assert_awaited_once()
 
     async def test_join_in_other_group_sends_nothing(self):
+        self.enable_notices("join")
         await self.events.handle_member_join(self.bot, arrival(group=OTHER_GROUP))
         self.send_group.assert_not_awaited()
 
@@ -234,7 +244,7 @@ class QQRevocationTests(unittest.IsolatedAsyncioTestCase):
             await self.events.handle_member_join(self.bot, arrival())
         self.send_group.assert_not_awaited()
         self.assertEqual(self.events.membership_generation, generation + 1)
-        with self.configure('events: {join: {message: "你好 {member}！[CQ:at,qq=all]"}}'):
+        with self.configure('events: {join: {enabled: true, message: "你好 {member}！[CQ:at,qq=all]"}}'):
             await self.events.handle_member_join(self.bot, arrival())
         self.send_group.assert_awaited_once()
         message = self.send_group.call_args.kwargs["message"]
@@ -270,8 +280,8 @@ events:
     async def test_departure_chooses_no_binding_or_transaction_failure_template(self):
         with self.configure("""
 events:
-  leave: {revoked: leave success, no_binding: leave empty, failed: leave failed}
-  kick: {revoked: kick success, no_binding: kick empty, failed: kick failed}
+  leave: {enabled: true, revoked: leave success, no_binding: leave empty, failed: leave failed}
+  kick: {enabled: true, revoked: kick success, no_binding: kick empty, failed: kick failed}
 """):
             for kind in ("leave", "kick"):
                 self.send_group.reset_mock()
@@ -293,6 +303,19 @@ events:
                 self.assert_notice(f"{kind} success")
                 self.assertIsNone(self.binding())
                 self.notify.assert_called_once_with()
+
+    async def test_all_notices_disabled_by_default_still_revoke_on_leave_and_kick(self):
+        await self.events.handle_member_join(self.bot, arrival())
+        for kind in ("leave", "kick"):
+            with self.subTest(kind=kind):
+                self.bind()
+                version = self.version()
+                self.notify.reset_mock()
+                await self.events.handle_member_leave(self.bot, departure(kind))
+                self.assertIsNone(self.binding())
+                self.assertGreater(self.version(), version)
+                self.notify.assert_called_once_with()
+        self.send_group.assert_not_awaited()
 
     async def test_failed_transaction_rolls_back_and_same_event_can_retry(self):
         self.bind()
@@ -570,7 +593,11 @@ commands:
                 self.assertEqual(reply.extract_plain_text(), "自定义对账忙")
 
     async def test_info_requires_superuser_and_sends_png_for_both_aliases(self):
-        with patch.object(runtime_status, "check_fastapi", return_value=runtime_status.HealthResult(200, 15)):
+        with (
+            patch.object(runtime_status, "check_fastapi", return_value=runtime_status.HealthResult(200, 15)),
+            patch.object(self.bot, "call_api", AsyncMock(return_value={"user_id": BOT, "nickname": "夜萤助手"})) as login,
+            patch.object(self.status, "render_status", wraps=self.status.render_status) as render,
+        ):
             await self.status.remember_connection(self.bot)
             for alias in ("/信息", "/info"):
                 self.reply.reset_mock()
@@ -585,6 +612,27 @@ commands:
                     decoded.verify()
             await self.status.forget_connection(self.bot)
             self.assertNotIn(self.bot, self.status.connected_at)
+        self.assertEqual(login.await_args_list, [call("get_login_info"), call("get_login_info")])
+        self.assertEqual(
+            [(item.kwargs["qq_id"], item.kwargs["nickname"]) for item in render.call_args_list],
+            [(str(BOT), "夜萤助手")] * 2,
+        )
+        self.status.get_avatar.assert_has_calls([call(str(BOT)), call(str(BOT))])
+
+    async def test_info_login_failure_still_sends_image_with_current_account_id(self):
+        with (
+            patch.object(runtime_status, "check_fastapi", return_value=runtime_status.HealthResult(200, 15)),
+            patch.object(self.bot, "call_api", AsyncMock(side_effect=TimeoutError)),
+            patch.object(self.status, "render_status", wraps=self.status.render_status) as render,
+        ):
+            image = await self.command_reply("/info", user=MEMBER)
+        self.assertEqual(image.type, "image")
+        self.assertEqual(render.call_args.kwargs["qq_id"], str(BOT))
+        self.assertIsNone(render.call_args.kwargs["nickname"])
+
+    async def test_info_ignores_nickname_from_a_different_account(self):
+        with patch.object(self.bot, "call_api", AsyncMock(return_value={"user_id": MEMBER, "nickname": "other"})):
+            self.assertIsNone(await self.status._nickname(self.bot))
 
     async def test_commands_in_other_group_do_not_respond_and_status_has_no_matcher(self):
         for text in (

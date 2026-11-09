@@ -1,4 +1,3 @@
-import os
 import platform
 import sqlite3
 import time
@@ -9,7 +8,7 @@ from datetime import UTC, datetime
 from http.client import HTTPConnection, HTTPException
 from pathlib import Path
 from threading import Lock
-from typing import Literal
+from typing import Literal, TypeVar
 
 import psutil
 
@@ -19,8 +18,9 @@ import database
 UNAVAILABLE = "Unavailable"
 HEALTH_TIMEOUT = 2
 HEALTH_PORT = 18765
+CPU_SAMPLE_INTERVAL = 0.12
 OutcomeKind = Literal["reconcile", "notify"]
-Row = tuple[str, str]
+T = TypeVar("T")
 
 _outcome_lock = Lock()
 _outcomes: dict[OutcomeKind, tuple[str, datetime]] = {}
@@ -69,17 +69,39 @@ def check_fastapi() -> HealthResult:
 
 
 @dataclass(frozen=True)
+class ResourceUsage:
+    used: int
+    total: int
+    percent: float
+
+
+@dataclass(frozen=True)
 class RuntimeStatus:
-    sections: tuple[tuple[str, tuple[Row, ...]], ...]
     checked_at: datetime
+    connected: bool | None = None
+    api: HealthResult | None = None
+    sqlite_readable: bool | None = None
+    system_name: str | None = None
+    python_version: str | None = None
+    cpu_cores: int | None = None
+    cpu_percent: float | None = None
+    memory: ResourceUsage | None = None
+    disk: ResourceUsage | None = None
+    system_seconds: float | None = None
+    bot_seconds: float | None = None
+    connection_seconds: float | None = None
+    active_bindings: int | None = None
+    auth_version: int | None = None
+    last_reconcile: str = "No attempts yet"
+    last_notice: str = "No attempts yet"
 
 
-def _probe(check: Callable[[], str]) -> str:
+def _probe(check: Callable[[], T]) -> T | None:
     try:
-        return check() or UNAVAILABLE
+        return check()
     except Exception:
         # Status fields never contain exception text, which can include paths or addresses.
-        return UNAVAILABLE
+        return None
 
 
 def _binding_status(group_id: str) -> tuple[int, int]:
@@ -96,69 +118,65 @@ def _binding_status(group_id: str) -> tuple[int, int]:
         return version[0], count
 
 
-def _duration(seconds: float | None) -> str:
-    if seconds is None:
-        return UNAVAILABLE
-    days, remainder = divmod(max(0, int(seconds)), 86_400)
-    hours, remainder = divmod(remainder, 3_600)
-    minutes, seconds = divmod(remainder, 60)
-    return f"{days}d {hours:02}h {minutes:02}m {seconds:02}s"
+def _system_name() -> str:
+    name = platform.system()
+    if name == "Linux":
+        release = _probe(platform.freedesktop_os_release)
+        if release:
+            return " ".join(filter(None, (release.get("NAME") or name, release.get("VERSION_ID"))))
+    if name == "Windows":
+        return f"{name} {platform.release()}".rstrip()
+    if name == "Darwin":
+        return f"macOS {platform.mac_ver()[0]}".rstrip()
+    return name
 
 
-def _usage(used: int, total: int, percent: float) -> str:
-    gib = 1024 ** 3
-    return f"{used / gib:.1f} / {total / gib:.1f} GiB ({percent:.0f}%)"
+def _cpu_percent() -> float | None:
+    # A positive interval measures two samples, including on the first request.
+    percent = psutil.cpu_percent(interval=CPU_SAMPLE_INTERVAL)
+    return percent if 0 <= percent <= 100 else None
 
 
-def _memory() -> str:
+def _usage(used: int, total: int, percent: float) -> ResourceUsage | None:
+    if total > 0 and 0 <= used <= total and 0 <= percent <= 100:
+        return ResourceUsage(used, total, percent)
+    return None
+
+
+def _memory() -> ResourceUsage | None:
     memory = psutil.virtual_memory()
     return _usage(memory.total - memory.available, memory.total, memory.percent)
 
 
-def _disk() -> str:
+def _disk() -> ResourceUsage | None:
     opt = Path("/opt")
     disk = psutil.disk_usage(str(opt if opt.is_dir() else Path("/")))
     return _usage(disk.used, disk.total, disk.percent)
 
 
-def _cores() -> str:
-    cores = psutil.cpu_count()
-    return str(cores) if cores else UNAVAILABLE
-
-
 def collect_status(group_id: str, *, connected: bool, connected_for: float | None) -> RuntimeStatus:
-    api = _probe(lambda: check_fastapi().summary)
-    try:
-        version, count = map(str, _binding_status(group_id))
-        sqlite_status = "Readable"
-    except Exception:
-        sqlite_status = version = count = UNAVAILABLE
+    api = _probe(check_fastapi)
+    binding_status = _probe(lambda: _binding_status(group_id))
+    version, count = binding_status if binding_status is not None else (None, None)
     with _outcome_lock:
         reconciliation = _format_outcome(_outcomes.get("reconcile"))
         notification = _format_outcome(_outcomes.get("notify"))
-    return RuntimeStatus((
-        ("Service health", (
-            ("Bot", "Running"),
-            ("OneBot", "Connected" if connected else "Disconnected"),
-            ("FastAPI", api),
-            ("SQLite", sqlite_status),
-        )),
-        ("Uptime", (
-            ("System", _probe(lambda: _duration(time.time() - psutil.boot_time()))),
-            ("Bot process", _probe(lambda: _duration(time.time() - psutil.Process().create_time()))),
-            ("OneBot connection", _duration(connected_for) if connected else UNAVAILABLE),
-        )),
-        ("Host", (
-            ("Operating system", _probe(platform.system)),
-            ("Python", _probe(platform.python_version)),
-            ("Logical CPU cores", _probe(_cores)),
-            ("Memory usage", _probe(_memory)),
-            ("Disk usage", _probe(_disk)),
-        )),
-        ("Authorization", (
-            ("Authorization version", version),
-            ("Active bindings", count),
-            ("Last member reconciliation", reconciliation),
-            ("Last authorization notice", notification),
-        )),
-    ), datetime.now(UTC))
+    return RuntimeStatus(
+        connected=connected,
+        api=api,
+        sqlite_readable=binding_status is not None,
+        system_name=_probe(_system_name),
+        python_version=_probe(platform.python_version),
+        cpu_cores=_probe(psutil.cpu_count),
+        cpu_percent=_probe(_cpu_percent),
+        memory=_probe(_memory),
+        disk=_probe(_disk),
+        system_seconds=_probe(lambda: time.time() - psutil.boot_time()),
+        bot_seconds=_probe(lambda: time.time() - psutil.Process().create_time()),
+        connection_seconds=connected_for if connected else None,
+        active_bindings=count,
+        auth_version=version,
+        last_reconcile=reconciliation,
+        last_notice=notification,
+        checked_at=datetime.now(UTC),
+    )

@@ -24,6 +24,7 @@ class MessageConfigTests(unittest.TestCase):
             snapshot = config.load_messages(self.path)
         warning.assert_not_called()
         self.assertEqual(snapshot.values, config.DEFAULTS)
+        self.assertFalse(any(snapshot.enabled(event) for event in ("join", "leave", "kick")))
         self.assertEqual(config.MESSAGE_FILE, BOT_DIR / "messages.yml")
 
     def test_complete_example_matches_all_defaults(self):
@@ -41,11 +42,11 @@ class MessageConfigTests(unittest.TestCase):
             self.assertEqual(value, default, key)
 
     def test_partial_overrides_and_snapshot_isolation(self):
-        snapshot = self.load("events: {leave: {enabled: false}}\ninfo: {title: 私服状态}")
-        self.load("events: {kick: {enabled: false}}")
-        self.assertFalse(snapshot.enabled("leave"))
-        self.assertTrue(snapshot.enabled("join"))
-        self.assertTrue(snapshot.enabled("kick"))
+        snapshot = self.load("events: {leave: {enabled: true}}\ninfo: {title: 私服状态}")
+        self.load("events: {kick: {enabled: true}}")
+        self.assertTrue(snapshot.enabled("leave"))
+        self.assertFalse(snapshot.enabled("join"))
+        self.assertFalse(snapshot.enabled("kick"))
         self.assertEqual(snapshot.text("info.title"), "私服状态")
         self.assertEqual(snapshot.text("info.footer"), config.DEFAULTS["info.footer"])
         with self.assertRaises(TypeError):
@@ -55,7 +56,9 @@ class MessageConfigTests(unittest.TestCase):
         with patch.object(config.logger, "error") as error:
             for source in ("private_config_marker: [", "!!python/object/apply:builtins.str [private_config_marker]"):
                 with self.subTest(source=source):
-                    self.assertEqual(self.load(source).values, config.DEFAULTS)
+                    snapshot = self.load(source)
+                    self.assertEqual(snapshot.values, config.DEFAULTS)
+                    self.assertFalse(any(snapshot.enabled(event) for event in ("join", "leave", "kick")))
             with patch.object(Path, "open", side_effect=PermissionError("private_config_marker")):
                 self.assertEqual(config.load_messages(self.path).values, config.DEFAULTS)
         self.assertEqual(error.call_count, 3)
@@ -75,14 +78,14 @@ info:
 """)
         self.assertEqual(warning.call_count, 6)
         self.assertNotIn("private_config_marker", repr(warning.call_args_list))
-        self.assertTrue(snapshot.enabled("leave"))
-        self.assertTrue(snapshot.enabled("kick"))
-        self.assertTrue(snapshot.enabled("join"))
+        self.assertFalse(snapshot.enabled("leave"))
+        self.assertFalse(snapshot.enabled("kick"))
+        self.assertFalse(snapshot.enabled("join"))
         self.assertEqual(snapshot.text("commands.bind.usage"), config.DEFAULTS["commands.bind.usage"])
         self.assertEqual(snapshot.text("events.leave.failed"), "私服撤权异常")
         self.assertEqual(snapshot.text("commands.bind.success"), "已绑定 {mc_name}")
-        self.assertEqual(snapshot.info_label("FastAPI"), "FastAPI")
-        self.assertEqual(snapshot.info_label("SQLite"), "数据库")
+        self.assertEqual(snapshot.info_text("info.labels.api"), "FastAPI")
+        self.assertEqual(snapshot.info_text("info.labels.database"), "数据库")
 
     def test_rejects_unknown_or_non_simple_placeholders(self):
         key = "commands.bind.success"
