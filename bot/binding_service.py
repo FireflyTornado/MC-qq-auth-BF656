@@ -127,15 +127,13 @@ def bind_player(
     return "success", mc_name
 
 
-def unbind_player(group_id: str, qq_id: str) -> str | None:
+def unbind_player(group_id: str, qq_id: str, *, left_at: int | None = None) -> str | None:
     """删除当前绑定，并更新权限版本号。"""
-
     with closing(sqlite3.connect(DB_PATH, timeout=10)) as conn, conn:
         conn.execute("BEGIN IMMEDIATE")
-
         row = conn.execute(
             """
-            SELECT id, mc_name
+            SELECT id, mc_name, bound_at
             FROM offline_bindings
             WHERE group_id = ?
               AND qq_id = ?
@@ -145,17 +143,60 @@ def unbind_player(group_id: str, qq_id: str) -> str | None:
         ).fetchone()
 
         if not row:
-            conn.rollback()
+            return None
+        binding_id, mc_name, bound_at = row
+        if left_at is not None and bound_at > left_at:
             return None
 
-        binding_id, mc_name = row
-
-        conn.execute(
-            "DELETE FROM offline_bindings WHERE id = ?",
-            (binding_id,),
-        )
-
-        update_auth_version(conn)
+        _delete_active_bindings(conn, group_id, {qq_id: binding_id})
 
     notify_auth_updated()
     return mc_name
+
+
+def binding_audit_snapshot(group_id: str) -> tuple[int, dict[str, int]]:
+    """在同一读事务中记录对账所用的版本和绑定。"""
+    with closing(sqlite3.connect(DB_PATH, timeout=10)) as conn, conn:
+        conn.execute("BEGIN")
+        version = _audit_version(conn)
+        rows = conn.execute(
+            "SELECT qq_id, id FROM offline_bindings WHERE group_id = ? AND status = 'ACTIVE'",
+            (group_id,),
+        )
+        return version, dict(rows)
+
+
+def revoke_checked_bindings(group_id: str, version: int, missing: dict[str, int]) -> int | None:
+    if not missing:
+        return 0
+    with closing(sqlite3.connect(DB_PATH, timeout=10)) as conn, conn:
+        conn.execute("BEGIN IMMEDIATE")
+        # Some supported legacy tables can reuse a deleted row ID.
+        if _audit_version(conn) != version:
+            return None
+        deleted = _delete_active_bindings(conn, group_id, missing)
+    if deleted:
+        notify_auth_updated()
+    return deleted
+
+
+def _audit_version(conn: sqlite3.Connection) -> int:
+    row = conn.execute("SELECT version FROM auth_state WHERE id = 1").fetchone()
+    if row is None or type(row[0]) is not int or row[0] < 0:
+        raise sqlite3.IntegrityError("授权版本记录无效")
+    return row[0]
+
+
+def _delete_active_bindings(
+    conn: sqlite3.Connection, group_id: str, bindings: dict[str, int]
+) -> int:
+    result = conn.executemany(
+        """
+        DELETE FROM offline_bindings
+        WHERE group_id = ? AND qq_id = ? AND id = ? AND status = 'ACTIVE'
+        """,
+        ((group_id, qq_id, binding_id) for qq_id, binding_id in bindings.items()),
+    )
+    if result.rowcount:
+        update_auth_version(conn)
+    return result.rowcount

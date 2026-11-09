@@ -3,6 +3,7 @@ import logging
 import secrets
 import sqlite3
 from contextlib import closing, suppress
+from dataclasses import dataclass, field
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Response, WebSocket, WebSocketDisconnect
 
@@ -25,6 +26,9 @@ TARGET_GROUP_ID = str(target_group_id(config))
 del config
 
 MAX_AUTHORIZATION_LENGTH = MAX_TOKEN_LENGTH + 128
+WS_SEND_TIMEOUT = 3
+WS_CLOSE_TIMEOUT = 3
+RECONCILE_INTERVAL = 60
 logger = logging.getLogger("mc_qq_auth")
 
 
@@ -129,8 +133,14 @@ def get_snapshot(response: Response):
         )
 
 
-# 当前连接的 Minecraft 客户端
-connections: set[WebSocket] = set()
+@dataclass
+class BroadcastConnection:
+    send_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    failed: asyncio.Event = field(default_factory=asyncio.Event)
+
+
+# 每个连接的路由负责关闭，广播只标记失败。
+connections: dict[WebSocket, BroadcastConnection] = {}
 
 # 避免多个通知同时广播
 broadcast_lock = asyncio.Lock()
@@ -151,49 +161,42 @@ def read_auth_version() -> int:
             "SELECT version FROM auth_state WHERE id = 1"
         ).fetchone()
 
-        if row is None:
-            raise RuntimeError("授权版本记录不存在")
+        if row is None or type(row[0]) is not int or row[0] < 0:
+            raise RuntimeError("授权版本记录无效")
+        return row[0]
 
-        return int(row[0])
+
+async def send_update(websocket: WebSocket, connection: BroadcastConnection, message: dict) -> bool:
+    try:
+        async with asyncio.timeout(WS_SEND_TIMEOUT), connection.send_lock:
+            if websocket not in connections:
+                return False
+            await websocket.send_json(message)
+        return True
+    except Exception as exc:
+        connections.pop(websocket, None)
+        connection.failed.set()
+        logger.warning("授权 WebSocket 广播失败，正在关闭连接（%s）", type(exc).__name__)
+        return False
 
 
 async def broadcast_latest():
-    """只有版本发生变化时才推送。"""
-
+    """串行发布递增版本，每个版本并发向各连接发送。"""
     global last_broadcast_version
-
     async with broadcast_lock:
-        version = await asyncio.to_thread(
-            read_auth_version
-        )
-
+        version = await asyncio.to_thread(read_auth_version)
         if version == last_broadcast_version:
             return version, 0
+        if last_broadcast_version is not None and version < last_broadcast_version:
+            raise RuntimeError("数据库授权版本回退")
 
-        message = {
-            "type": "auth_updated",
-            "version": version,
-        }
-
-        failed = []
-        delivered = 0
-
-        for websocket in tuple(connections):
-            try:
-                await asyncio.wait_for(
-                    websocket.send_json(message),
-                    timeout=3,
-                )
-                delivered += 1
-            except Exception:
-                failed.append(websocket)
-
-        for websocket in failed:
-            connections.discard(websocket)
-
+        message = {"type": "auth_updated", "version": version}
+        delivered = await asyncio.gather(*(
+            send_update(websocket, connection, message)
+            for websocket, connection in tuple(connections.items())
+        ))
         last_broadcast_version = version
-
-        return version, delivered
+        return version, sum(delivered)
 
 
 # ----------------------------------------
@@ -235,22 +238,53 @@ async def mc_websocket(websocket: WebSocket):
 
     await websocket.accept()
 
-    connections.add(websocket)
+    connection = BroadcastConnection()
 
     try:
-        await websocket.send_json({
-            "type": "connected",
-            "message": "Minecraft authentication connected",
-        })
+        # Register before the greeting so the initial snapshot and broadcasts overlap.
+        async with connection.send_lock:
+            connections[websocket] = connection
+            try:
+                async with asyncio.timeout(WS_SEND_TIMEOUT):
+                    await websocket.send_json({
+                        "type": "connected",
+                        "message": "Minecraft authentication connected",
+                    })
+            except Exception:
+                connections.pop(websocket, None)
+                await close_failed_websocket(websocket)
+                return
 
-        while True:
-            await websocket.receive_text()
+        disconnected = asyncio.create_task(wait_for_disconnect(websocket))
+        failed = asyncio.create_task(connection.failed.wait())
+        try:
+            done, _ = await asyncio.wait((disconnected, failed), return_when=asyncio.FIRST_COMPLETED)
+            if disconnected in done:
+                disconnected.result()
+            else:
+                await close_failed_websocket(websocket)
+        finally:
+            disconnected.cancel()
+            failed.cancel()
+            await asyncio.gather(disconnected, failed, return_exceptions=True)
+    finally:
+        connections.pop(websocket, None)
 
-    except WebSocketDisconnect:
+
+async def wait_for_disconnect(websocket: WebSocket) -> None:
+    while (await websocket.receive())["type"] != "websocket.disconnect":
         pass
 
-    finally:
-        connections.discard(websocket)
+
+async def close_failed_websocket(websocket: WebSocket) -> None:
+    try:
+        async with asyncio.timeout(WS_CLOSE_TIMEOUT):
+            await websocket.close(code=1011)
+    except WebSocketDisconnect:
+        pass
+    except Exception as exc:
+        # The deployed Uvicorn closes the transport when the ASGI scope returns.
+        logger.warning("授权 WebSocket 关闭帧发送失败，结束连接处理（%s）", type(exc).__name__)
 
 
 # ----------------------------------------
@@ -259,7 +293,7 @@ async def mc_websocket(websocket: WebSocket):
 
 async def reconcile_versions():
     while True:
-        await asyncio.sleep(60)
+        await asyncio.sleep(RECONCILE_INTERVAL)
 
         try:
             await broadcast_latest()

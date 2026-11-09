@@ -3,15 +3,19 @@ import importlib
 import json
 import os
 import shutil
+import socket
 import sqlite3
 import subprocess
 import sys
 import tempfile
 import unittest
-from contextlib import closing
+from contextlib import asynccontextmanager, closing
 from pathlib import Path
 from urllib.error import URLError
 from unittest.mock import patch
+
+import uvicorn
+from websockets.asyncio.client import connect
 
 BOT_DIR = Path(__file__).resolve().parents[1] / "bot"
 sys.path.insert(0, str(BOT_DIR))
@@ -157,7 +161,7 @@ class ApiAuthTests(unittest.IsolatedAsyncioTestCase):
                     self.api.app(scope("websocket", WS_PATH, [header]), receive, send), timeout=2
                 )
                 self.assertEqual([message["type"] for message in sent], ["websocket.close"])
-                self.assertEqual(self.api.connections, set())
+                self.assertFalse(self.api.connections)
 
     async def test_websocket_connects_and_broadcasts_existing_messages(self):
         incoming = asyncio.Queue()
@@ -183,7 +187,180 @@ class ApiAuthTests(unittest.IsolatedAsyncioTestCase):
         finally:
             await incoming.put({"type": "websocket.disconnect", "code": 1000})
             await asyncio.wait_for(task, timeout=2)
-        self.assertEqual(self.api.connections, set())
+        self.assertFalse(self.api.connections)
+
+    @asynccontextmanager
+    async def websocket(self, intercept=None):
+        incoming = asyncio.Queue()
+        outgoing = asyncio.Queue()
+        incoming.put_nowait({"type": "websocket.connect"})
+
+        async def send(message):
+            if intercept is not None:
+                await intercept(message)
+            outgoing.put_nowait(message)
+
+        task = asyncio.create_task(self.api.app(
+            scope("websocket", WS_PATH, [bearer(API_TOKEN)]), incoming.get, send,
+        ))
+        try:
+            self.assertEqual((await asyncio.wait_for(outgoing.get(), 2))["type"], "websocket.accept")
+            self.assertEqual(json.loads((await asyncio.wait_for(outgoing.get(), 2))["text"])["type"], "connected")
+            yield outgoing, task
+        finally:
+            incoming.put_nowait({"type": "websocket.disconnect", "code": 1000})
+            await asyncio.wait_for(task, 2)
+
+    def set_version(self, version):
+        with closing(sqlite3.connect(self.api.DB_PATH)) as conn, conn:
+            conn.execute("UPDATE auth_state SET version = ?", (version,))
+
+    async def test_failed_send_closes_only_the_failed_websocket(self):
+        async def broken_send(message):
+            if message["type"] == "websocket.send" and json.loads(message["text"])["type"] == "auth_updated":
+                raise RuntimeError(API_TOKEN)
+
+        async with self.websocket(broken_send) as (failed, failed_task), self.websocket() as (healthy, _):
+            with self.assertLogs("mc_qq_auth", "WARNING") as logs:
+                status, _, body = await self.request(NOTIFY_PATH, [bearer(NOTIFY_TOKEN)], "POST")
+                self.assertEqual(status, 200)
+                self.assertEqual(body, {"success": True, "version": VERSION, "delivered": 1})
+                self.assertEqual(await asyncio.wait_for(failed.get(), 2), {
+                    "type": "websocket.close", "code": 1011, "reason": "",
+                })
+            self.assertNotIn(API_TOKEN, "\n".join(logs.output))
+            await asyncio.wait_for(failed_task, 2)
+            self.assertEqual(json.loads((await asyncio.wait_for(healthy.get(), 2))["text"]), {
+                "type": "auth_updated", "version": VERSION,
+            })
+            self.assertEqual(len(self.api.connections), 1)
+            self.set_version(VERSION + 1)
+            self.assertEqual(await self.api.broadcast_latest(), (VERSION + 1, 1))
+            self.assertEqual(json.loads((await asyncio.wait_for(healthy.get(), 2))["text"])["version"], VERSION + 1)
+        self.assertFalse(self.api.connections)
+
+    async def test_blocked_send_and_close_do_not_hold_up_healthy_clients(self):
+        sending = asyncio.Event()
+        closing_socket = asyncio.Event()
+
+        async def stalled_io(message):
+            if message["type"] == "websocket.send" and json.loads(message["text"])["type"] == "auth_updated":
+                sending.set()
+                await asyncio.Future()
+            if message["type"] == "websocket.close":
+                closing_socket.set()
+                await asyncio.Future()
+
+        with patch.object(self.api, "WS_SEND_TIMEOUT", 0.15), patch.object(self.api, "WS_CLOSE_TIMEOUT", 0.3):
+            async with self.websocket(stalled_io) as (_, failed_task), self.websocket() as (healthy, _):
+                broadcast = asyncio.create_task(self.api.broadcast_latest())
+                await asyncio.wait_for(sending.wait(), 2)
+                update = await asyncio.wait_for(healthy.get(), 2)
+                self.assertEqual(json.loads(update["text"])["version"], VERSION)
+                self.assertFalse(broadcast.done())
+                await asyncio.wait_for(closing_socket.wait(), 2)
+                self.assertEqual(await asyncio.wait_for(broadcast, 2), (VERSION, 1))
+                self.set_version(VERSION + 1)
+                self.assertEqual(await self.api.broadcast_latest(), (VERSION + 1, 1))
+                await asyncio.wait_for(failed_task, 2)
+        self.assertFalse(self.api.connections)
+
+    async def test_failed_close_ends_real_uvicorn_socket_and_reconnect_reads_latest_snapshot(self):
+        inject_failure = True
+        close_attempted = asyncio.Event()
+
+        async def app_with_transport_failure(scope, receive, send):
+            nonlocal inject_failure
+            if scope["type"] != "websocket" or not inject_failure:
+                await self.api.app(scope, receive, send)
+                return
+            inject_failure = False
+
+            async def send_with_failure(message):
+                if message["type"] == "websocket.close":
+                    close_attempted.set()
+                    raise OSError("synthetic close failure")
+                if message["type"] == "websocket.send" and json.loads(message["text"])["type"] == "auth_updated":
+                    raise RuntimeError("synthetic send failure")
+                await send(message)
+
+            await self.api.app(scope, receive, send_with_failure)
+
+        with closing(socket.socket()) as listener:
+            listener.bind(("127.0.0.1", 0))
+            uri = f"ws://127.0.0.1:{listener.getsockname()[1]}{WS_PATH}"
+            server = uvicorn.Server(uvicorn.Config(
+                app_with_transport_failure, lifespan="off", log_level="critical", access_log=False,
+            ))
+            server_task = asyncio.create_task(server.serve(sockets=[listener]))
+            try:
+                async with asyncio.timeout(5):
+                    while not server.started:
+                        await asyncio.sleep(0.01)
+                headers = {"Authorization": bearer(API_TOKEN).decode("ascii")}
+                async with connect(uri, additional_headers=headers, proxy=None) as client:
+                    self.assertEqual(json.loads(await asyncio.wait_for(client.recv(), 2))["type"], "connected")
+                    with patch.object(binding_service, "DB_PATH", self.api.DB_PATH), patch.object(
+                        binding_service, "notify_auth_updated", return_value=False
+                    ):
+                        self.assertEqual(binding_service.unbind_player(GROUP_ID, "1"), "Steve")
+                    version, delivered = await self.api.broadcast_latest()
+                    self.assertGreater(version, VERSION)
+                    self.assertEqual(delivered, 0)
+                    await asyncio.wait_for(client.wait_closed(), 2)
+                    self.assertTrue(close_attempted.is_set())
+                self.assertFalse(self.api.connections)
+                async with connect(uri, additional_headers=headers, proxy=None) as client:
+                    self.assertEqual(json.loads(await asyncio.wait_for(client.recv(), 2))["type"], "connected")
+                    status, _, snapshot = await self.request(SNAPSHOT_PATH, [bearer(API_TOKEN)])
+                    self.assertEqual(status, 200)
+                    self.assertEqual(snapshot, {"version": version, "active_names": ["alex"]})
+            finally:
+                server.should_exit = True
+                await asyncio.wait_for(server_task, 5)
+
+    async def test_failed_notify_recovers_via_api_reconciliation(self):
+        async with self.websocket() as (outgoing, _):
+            self.assertEqual(await self.api.broadcast_latest(), (VERSION, 1))
+            await asyncio.wait_for(outgoing.get(), 2)
+            with patch.object(binding_service, "DB_PATH", self.api.DB_PATH), patch.object(
+                notify_client, "load_config", return_value=ENV
+            ), patch.object(notify_client.opener, "open", side_effect=URLError(NOTIFY_TOKEN)), self.assertLogs(
+                "mc_qq_auth", "WARNING"
+            ) as logs:
+                self.assertEqual(binding_service.unbind_player(GROUP_ID, "1"), "Steve")
+                self.assertIsNone(binding_service.get_binding(GROUP_ID, "1"))
+            self.assertNotIn(NOTIFY_TOKEN, "\n".join(logs.output))
+            self.assertTrue(outgoing.empty())
+            with patch.object(self.api, "RECONCILE_INTERVAL", 0.01):
+                await self.api.start_reconciliation()
+                try:
+                    update = json.loads((await asyncio.wait_for(outgoing.get(), 2))["text"])
+                finally:
+                    await self.api.stop_reconciliation()
+            self.assertEqual(update["type"], "auth_updated")
+            self.assertGreater(update["version"], VERSION)
+            status, _, snapshot = await self.request(SNAPSHOT_PATH, [bearer(API_TOKEN)])
+            self.assertEqual(status, 200)
+            self.assertEqual(snapshot, {"version": update["version"], "active_names": ["alex"]})
+
+    async def test_concurrent_duplicate_and_older_versions_are_not_rebroadcast(self):
+        async with self.websocket() as (outgoing, _):
+            results = await asyncio.gather(self.api.broadcast_latest(), self.api.broadcast_latest())
+            self.assertCountEqual(results, [(VERSION, 1), (VERSION, 0)])
+            update = await asyncio.wait_for(outgoing.get(), 2)
+            self.assertEqual(json.loads(update["text"])["version"], VERSION)
+            self.assertTrue(outgoing.empty())
+
+            self.set_version(VERSION - 1)
+            with self.assertLogs("mc_qq_auth", "ERROR"):
+                self.assertEqual((await self.request(NOTIFY_PATH, [bearer(NOTIFY_TOKEN)], "POST"))[0], 503)
+            self.assertEqual(self.api.last_broadcast_version, VERSION)
+            self.assertTrue(outgoing.empty())
+
+            self.set_version(VERSION + 1)
+            self.assertEqual(await self.api.broadcast_latest(), (VERSION + 1, 1))
+            self.assertEqual(json.loads((await asyncio.wait_for(outgoing.get(), 2))["text"])["version"], VERSION + 1)
 
 
 class ConfigTests(unittest.TestCase):
@@ -252,13 +429,31 @@ class ConfigTests(unittest.TestCase):
         with patch.dict(os.environ, {"MC_NOTIFY_URL": url}, clear=True), patch.object(
             notify_client.opener, "open"
         ) as send:
-            send.return_value.__enter__.return_value.status = 200
+            response = send.return_value.__enter__.return_value
+            response.status = 200
+            response.read.return_value = b'{"success":true,"version":1,"delivered":0}'
             self.assertTrue(notify_client.notify_auth_updated())
         request = send.call_args.args[0]
         self.assertEqual(request.full_url, url)
         self.assertEqual(request.get_method(), "POST")
         self.assertEqual(request.get_header("Authorization"), f"Bearer {NOTIFY_TOKEN}")
         self.assertEqual(send.call_args.kwargs, {"timeout": 3})
+
+    def test_notify_requires_positive_acknowledgement_without_logging_response(self):
+        with patch.object(notify_client.opener, "open") as send:
+            response = send.return_value.__enter__.return_value
+            for status, body in (
+                (200, b'{"success":false}'),
+                (200, b'{"success":true}'),
+                (200, NOTIFY_TOKEN.encode("ascii")),
+                (200, b"x" * 4097),
+                (503, b'{"success":true}'),
+            ):
+                response.status = status
+                response.read.return_value = body
+                with self.subTest(status=status, length=len(body)), self.assertLogs("mc_qq_auth", "WARNING") as logs:
+                    self.assertFalse(notify_client.notify_auth_updated())
+                    self.assertNotIn(NOTIFY_TOKEN, "\n".join(logs.output))
 
     def test_network_failure_keeps_committed_binding_and_hides_error_values(self):
         path = self.root / "auth.db"

@@ -34,6 +34,8 @@ cp -n bot/.env.example bot/.env
 
 通知默认发送到 `http://127.0.0.1:18765/internal/mc/notify`。可用 `MC_NOTIFY_URL` 覆盖为可信网络上的直连 HTTP(S) 地址。通知请求绕过环境代理并拒绝重定向。
 
+群成员对账在 OneBot 连接成功后自动执行。若需开放手动对账，在 Bot 的运行配置中填写 NoneBot 的 `SUPERUSERS` JSON 数组，配置的超级用户可在目标群发送 `/授权对账`。群详情交叉校验依赖当前 Compose 固定的 NapCat 所提供的 `get_group_detail_info`。名单请求失败、为空、两次名单不一致或人数校验失败时，对账跳过撤权。
+
 ## Ubuntu systemd 部署
 
 [API unit](../deploy/systemd/mc-qq-api.service) 和 [Bot unit](../deploy/systemd/mc-qq-bot.service) 是按部署约定编写的候选模板。上线前核对当前安装的 unit 和 drop-in。两个服务以 `root` 运行，工作目录为 `/opt/mc-qq-auth/bot`，解释器使用 `bot/.venv/bin/python`。前文的仓库根目录虚拟环境用于本地开发，systemd 使用 `bot/.venv`。
@@ -117,6 +119,8 @@ sudo systemctl restart mc-qq-api.service mc-qq-bot.service
 ```
 
 两个服务由 systemd 在异常退出 5 秒后尝试重启。管理员停止服务时，systemd 先发送 SIGTERM，若 30 秒内仍未退出则强制终止。开机自启由管理员显式控制，`enable` 和 `disable` 本身不启动或停止进程。若只取消 API 自启，已启用的 Bot 仍可在启动时拉起 API。
+
+升级到阶段 3.4.2 时，按维护流程重启 `mc-qq-api.service` 和 `mc-qq-bot.service`，先确认 API 健康再启动 Bot。现有 SQLite 结构和依赖锁可直接使用。游戏端继续使用现有插件，API 重启后插件会自动重连并读取最新快照。
 
 ```sh
 sudo systemctl enable mc-qq-api.service mc-qq-bot.service
