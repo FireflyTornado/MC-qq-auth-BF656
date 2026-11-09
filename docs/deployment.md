@@ -337,19 +337,20 @@ python -m pip install --dry-run --ignore-installed --report "$resolve_report" -r
 
 ```sh
 cd minecraft-plugin
-mvn -B -ntp verify
+mvn -B -ntp clean verify
 ```
 
-部署产物为 `minecraft-plugin/target/MCQQAuth-0.2.0.jar`。Spigot API 1.20.1 以 `provided` 作用域参与编译，由兼容的服务端提供。JAR 内置并隔离 Jetty、Gson 及所需的日志依赖。Maven 测试通过本机回环地址运行模拟 HTTPS/WSS 服务并生成临时证书，也会模拟 Bukkit 登录、入服和踢出调度。
+部署产物为 `minecraft-plugin/target/MCQQAuth-0.3.0.jar`。Spigot API 1.20.1 以 `provided` 作用域参与编译，由兼容的服务端提供。JAR 内置并隔离 Jetty、Gson 及所需的日志依赖。Maven 测试通过本机回环地址运行模拟 HTTPS/WSS 服务并生成临时证书，也会模拟 Bukkit 登录、入服、公告界面和踢出调度。
 
 Spigot API 使用 `1.20.1-R0.1-SNAPSHOT`，本次解析到 `1.20.1-R0.1-20230921.163938-66`。仓库可更新或清理快照，JAR 打包时间也会影响文件字节。若发布需要逐字节复现，应固定已验证的快照构件及其校验值、构建工具和归档时间，并在独立环境中重建比对。
 
 ### Minecraft 插件配置
 
-将 JAR 中的默认配置作为 `plugins/MCQQAuth/config.yml` 模板。旧骨架的 `mode`、`sync.connect-on-startup` 和 `sync.reconnect-enabled` 已移除。旧配置应更新示例域名并补齐 Token。插件启用即执行准入检查，配置无效或初次同步未完成时，新玩家会看到服务未就绪提示。
+首次启动会从 JAR 生成 `plugins/MCQQAuth/config.yml`，其中显式设置 `mode: OBSERVE`。升级时保留已有配置和 Token。旧配置缺少 `mode` 时继续使用 `ENFORCE`，因此升级后仍执行白名单。模式值允许大小写混用。配置文件无法读取或 `mode` 无效时记录错误，按未就绪的 `ENFORCE` 拒绝新登录。
 
 | 配置 | 用途 |
 | --- | --- |
+| `mode` | `OBSERVE` 观察并提示，允许 MCQQAuth 判定为未授权或未知的玩家登录，也允许被撤权的玩家留在服内。`ENFORCE` 拒绝未授权和未知状态的新登录，按确认的快照执行在线撤权。 |
 | `api.snapshot-url` | 默认 `https://auth.bf656.nightbugclub.cn/internal/mc/snapshot`，路径无末尾斜杠。 |
 | `api.websocket-url` | 默认 `wss://auth.bf656.nightbugclub.cn/internal/mc/ws`，路径无末尾斜杠。 |
 | `api.token` | 填写后端的 `MC_API_TOKEN`，两条连接均通过 Bearer 请求头鉴权。实际值只保存在面板服的运行配置中。 |
@@ -361,10 +362,43 @@ Spigot API 使用 `1.20.1-R0.1-SNAPSHOT`，本次解析到 `1.20.1-R0.1-20230921
 
 离线模式仅按服务端收到的游戏名比对授权名单。知道已绑定游戏名的人可以冒用它，QQ 绑定无法证明连接者就是该 QQ 账号的持有人。
 
+#### 观察模式入服公告
+
+```yaml
+mode: OBSERVE
+
+observe:
+  notice:
+    enabled: true
+    show-delay-ticks: 30
+    cooldown-seconds: 86400
+    group-number: "123456789"
+    title: "社区认证提醒"
+    message:
+      - "你的 Minecraft 游戏 ID 尚未完成社区认证。"
+      - "请加入群 {group}，发送 /绑定 {player} 完成绑定。"
+    confirm-button: "我知道了，继续游戏"
+```
+
+| `observe.notice` 配置 | 默认值与限制 |
+| --- | --- |
+| `enabled` | 默认 `true`。设为 `false` 时仍记录观察结果。 |
+| `show-delay-ticks` | 默认 30 Tick，可设为 1–1200 的整数。 |
+| `cooldown-seconds` | 默认 86400 秒（24 小时），可设为 0–2592000 的整数。`0` 允许下次连接再次展示。 |
+| `group-number` | 用引号包裹实际 QQ 群号。接受 5–20 位十进制数字，首位须为 1–9。缺失或无效时显示「未配置」。 |
+| `title`、`confirm-button` | 分别默认为「社区认证提醒」和「我知道了，继续游戏」，各限 32 个字符。 |
+| `message` | 默认说明社区认证和 QQ 群绑定步骤，接受 1–6 行，每行最多 80 个字符。 |
+
+标题、按钮和正文支持 `{player}`（当前游戏名）和 `{group}`（群号或「未配置」）。其他占位符按原文本显示，替换后的文字按上述长度截断。类型、范围或文案无效时使用相应默认值。公告由游戏服配置控制。
+
+Bukkit 只能在玩家成功进入游戏后打开背包界面。名单未就绪时状态为 `UNKNOWN`，等待一次同步确认。只有有效名单确认玩家未授权才会尝试打开公告。延迟期间若玩家完成绑定并同步、离线、已有其他菜单或快照失效，本次跳过。按钮和 Esc 都可关闭窗口并继续游玩。点击确认只记录本次会话的确认，绑定仍由玩家在 QQ 群完成。
+
+同一连接最多展示一次。窗口实际打开后，按小写游戏名计算冷却。**插件重启后，内存冷却记录会重置。** `/mcqqauth` 需要 `mcqqauth.admin` 权限，可查看当前模式、授权服务状态、最近确认版本与名单人数，以及入服公告是否启用。
+
 ### Mohist 面板服维护窗口
 
-1. 在独立测试服确认面板选用 Java 17 和 Mohist 1.20.1。构建并保留 JAR，备份面板上的旧插件和配置。
-2. 停止游戏服，用 `MCQQAuth-0.2.0.jar` 替换 `plugins/` 中的旧版 JAR。从 JAR 中提取默认 `config.yml`，在面板上配置两条公网路径和 `MC_API_TOKEN`，并限制配置访问权限。
-3. 启动后从控制台运行 `mcqqauth`，确认显示已就绪、授权版本和名单人数。核对日志和游戏服到授权域名的 TLS 与 WSS Upgrade 连通情况。
-4. 用测试游戏名验证已授权可进、未绑定被拒、在线执行 `/解绑` 后被踢。模拟连接中断，核对在线玩家保留、新玩家被拒，以及重连后的全量同步和准入恢复。同时检查面板实际加载、登录事件顺序、其他插件的拒绝以及踢出行为。
-5. 验收通过后，在生产维护窗口按相同步骤安装。若需回退，停服后恢复之前备份的插件和配置，再按原服务配置启动。
+1. 使用 Java 17 和 Mohist 1.20.1 的独立测试服，配置隔离的 HTTPS/WSS 模拟授权端点、测试 Token 和测试游戏名。构建 JAR，备份待升级服的旧插件与配置。
+2. 停服后将 `plugins/` 中的旧版替换为 `MCQQAuth-0.3.0.jar`，只保留一个 MCQQAuth JAR。保留已有 API 地址、Token 和文件访问权限。首次安装可从 JAR 提取默认配置，填写两条授权端点和 Token。
+3. **阶段 A · 观察**。显式配置 `mode: OBSERVE` 与 `observe.notice.enabled: true`，填写 QQ 群号并启动游戏服。用 `/mcqqauth` 确认模式和同步状态。用已授权、未授权、同步暂不可用三种测试状态入服，核对公告、日志及同步恢复后的表现。检查原版客户端的中文文案、Esc、确认按钮、背包操作和其他插件的登录菜单。
+4. **阶段 B · 强制**。确认名单与绑定结果后，在测试服验证 `mode: ENFORCE`。核对已授权可进、未授权被拒、授权撤销后在线玩家被踢，以及断线时在线玩家保留、新登录被拒和重连后的恢复。用测试名单演练撤权，生产在线玩家留待维护窗口切换。
+5. 生产环境先按观察阶段核对实际同步和公告，再在维护窗口切换为 `ENFORCE`。每次修改模式或公告配置后完整停止并重新启动 Mohist，避免使用 `/reload`。回滚时停服，移出 0.3.0 JAR，恢复同一次备份的旧 JAR 与配置，再启动并核对 `/mcqqauth`。

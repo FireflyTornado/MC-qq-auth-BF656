@@ -85,10 +85,10 @@ public final class AuthorizationListener implements Listener {
     }
 
     private String denial(String name, String unauthorizedMessage) {
-        AuthorizationService.View current = view.get();
-        if (!current.ready()) {
-            return notReady;
-        }
-        return current.snapshot().allows(name) ? null : unauthorizedMessage;
+        return switch (view.get().status(name)) {
+            case AUTHORIZED -> null;
+            case UNAUTHORIZED -> unauthorizedMessage;
+            case UNKNOWN -> notReady;
+        };
     }
 }

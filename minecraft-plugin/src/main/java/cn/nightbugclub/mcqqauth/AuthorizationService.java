@@ -35,8 +35,17 @@ public final class AuthorizationService implements AutoCloseable {
     private static final int PING_INTERVAL_MS = 15_000;
     private static final int PONG_TIMEOUT_MS = 10_000;
 
+    enum PlayerStatus { AUTHORIZED, UNAUTHORIZED, UNKNOWN }
+
     record View(AuthProtocol.Snapshot snapshot, boolean ready) {
         static final View OFFLINE = new View(null, false);
+
+        PlayerStatus status(String playerName) {
+            if (!ready) {
+                return PlayerStatus.UNKNOWN;
+            }
+            return snapshot.allows(playerName) ? PlayerStatus.AUTHORIZED : PlayerStatus.UNAUTHORIZED;
+        }
     }
 
     private record Published(View view, Connection source) {}

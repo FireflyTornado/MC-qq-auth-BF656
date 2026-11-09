@@ -1,5 +1,21 @@
 # MCQQAuth Configuration
 
+# 新安装使用观察模式。升级时，已有配置缺少 mode 则继续使用 ENFORCE。
+mode: OBSERVE
+
+observe:
+  notice:
+    enabled: true
+    show-delay-ticks: 30
+    cooldown-seconds: 86400
+    # 在引号内填写社区 QQ 群号。
+    group-number: ""
+    title: "社区认证提醒"
+    message:
+      - "你的 Minecraft 游戏 ID 尚未完成社区认证。"
+      - "请加入服务器 QQ 群，并发送 /绑定 {player} 完成绑定。"
+    confirm-button: "我知道了，继续游戏"
+
 api:
   snapshot-url: "https://auth.bf656.nightbugclub.cn/internal/mc/snapshot"
   websocket-url: "wss://auth.bf656.nightbugclub.cn/internal/mc/ws"

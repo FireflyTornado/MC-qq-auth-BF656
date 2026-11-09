@@ -3,10 +3,13 @@ package cn.nightbugclub.mcqqauth;
 import org.bukkit.configuration.ConfigurationSection;
 
 import java.net.URI;
+import java.util.Locale;
 import java.util.regex.Pattern;
 
 final class PluginSettings {
     private static final Pattern TOKEN = Pattern.compile("[A-Za-z0-9._~+/-]+=*");
+
+    enum Mode { OBSERVE, ENFORCE }
 
     final URI snapshotUrl;
     final URI websocketUrl;
@@ -44,6 +47,19 @@ final class PluginSettings {
                 config.getInt("sync.reconnect-min-ms"),
                 config.getInt("sync.reconnect-max-ms")
         );
+    }
+
+    static Mode readMode(ConfigurationSection config) {
+        // Ignore the bundled template default for existing installations.
+        Object value = config.get("mode", Mode.ENFORCE.name());
+        if (value instanceof String name) {
+            try {
+                return Mode.valueOf(name.strip().toUpperCase(Locale.ROOT));
+            } catch (IllegalArgumentException ignored) {
+                // Report the invalid field without echoing its value.
+            }
+        }
+        throw new IllegalArgumentException("mode 必须为 OBSERVE 或 ENFORCE");
     }
 
     private static URI parseUrl(ConfigurationSection config, String key) {

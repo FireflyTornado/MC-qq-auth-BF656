@@ -9,7 +9,7 @@ MC-QQ-Auth 面向 Minecraft Java 版离线社区服务器。玩家在指定 QQ �
 | QQ 绑定、查询、解绑的业务逻辑 | 已实现且已测试 | 回归测试覆盖 SQLite 写入、查询、撤销、大小写去重和授权版本更新。 |
 | SQLite 初始化、迁移与授权 API | 已实现且已测试 | 回归测试使用临时数据库和合成配置，覆盖快照、Bearer 鉴权、WebSocket 消息及通知失败后的提交保留。 |
 | 目标 QQ 群退群自动撤权与成员对账 | 已实现，本地模拟测试 | 主动退群和被移出群均会撤权，OneBot 连接后补查离线期间遗漏的事件。真实 NapCat 事件与成员列表待验证。 |
-| Minecraft 插件准入与在线撤销 | 已实现，本地模拟测试 | 覆盖 HTTPS/WSS 同步、重连、登录拦截和在线踢出调度。真实 Mohist 面板服验收待进行。 |
+| Minecraft 插件观察、入服公告与白名单 | 已实现，本地模拟测试 | 覆盖 HTTPS/WSS 同步、重连、公告交互、登录拦截和在线踢出调度。真实 Mohist 面板服验收待进行。 |
 
 ## 系统架构与技术栈
 
@@ -55,6 +55,13 @@ TARGET_GROUP_ID=1 MC_API_TOKEN=demo-api-token MC_NOTIFY_TOKEN=demo-notify-token 
 ```
 
 另开一个终端运行 `curl --fail http://127.0.0.1:18765/internal/health` 检查进程。需要接入 NapCat、配置 Bot 或编译插件时，按 [部署与构建说明](docs/deployment.md) 操作。
+
+## Minecraft 插件 0.3.0
+
+- `OBSERVE` 同步授权名单并记录入服判断。只有成功入服且确认未授权的玩家才会收到可关闭的 QQ 绑定公告。授权服务故障和撤权均允许玩家继续游玩。
+- `ENFORCE` 对新登录执行白名单检查，在服务未就绪时拒绝准入，并按已确认的新名单移出失去授权的在线玩家。
+
+新安装的模板显式使用 `mode: OBSERVE`。从 0.2.0 升级且已有配置缺少 `mode` 时继续使用 `ENFORCE`。管理员可用 `/mcqqauth` 核对模式、同步状态及公告开关。在 `plugins/MCQQAuth/config.yml` 修改模式或设置公告后完整重启 Mohist。QQ 群号、公告文案及维护窗口流程见 [Minecraft 插件部署说明](docs/deployment.md#minecraft-插件构建)。
 
 ## 安全边界
 
