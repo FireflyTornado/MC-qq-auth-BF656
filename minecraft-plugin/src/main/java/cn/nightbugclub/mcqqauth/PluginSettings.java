@@ -51,7 +51,10 @@ final class PluginSettings {
 
     static Mode readMode(ConfigurationSection config) {
         // Ignore the bundled template default for existing installations.
-        Object value = config.get("mode", Mode.ENFORCE.name());
+        return parseMode(config.get("mode", Mode.ENFORCE.name()));
+    }
+
+    static Mode parseMode(Object value) {
         if (value instanceof String name) {
             try {
                 return Mode.valueOf(name.strip().toUpperCase(Locale.ROOT));

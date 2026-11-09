@@ -51,6 +51,7 @@ class ObserveNoticeTest {
     private final ItemMeta book = mock(ItemMeta.class);
     private final ItemMeta emerald = mock(ItemMeta.class);
     private AuthorizationService.View view = AuthorizationService.View.OFFLINE;
+    private final AuthorizationModeController modes = new AuthorizationModeController(PluginSettings.Mode.OBSERVE);
     private ObserveNotice notice;
     private MockedStatic<Bukkit> bukkit;
 
@@ -348,6 +349,39 @@ class ObserveNoticeTest {
     }
 
     @Test
+    void modeChangesCancelOldVisitsCloseOnlyOwnedViewsAndRetainCooldown() {
+        Client active = show();
+        Client foreign = new Client("Other");
+        join(foreign);
+        runNext();
+        foreign.open = inventoryView(foreign.player, mock(Inventory.class), InventoryType.CHEST);
+        Client delayed = new Client("Alex");
+        join(delayed);
+        Scheduled scheduled = tasks.peek();
+
+        modes.switchTo(PluginSettings.Mode.ENFORCE);
+        notice.clearVisits();
+        verify(scheduled.task).cancel();
+        verify(active.player).closeInventory();
+        verify(foreign.player, never()).closeInventory();
+        Client enforceJoin = new Client("Enforced");
+        join(enforceJoin);
+        modes.switchTo(PluginSettings.Mode.OBSERVE);
+        runNext(); // Simulate a task already selected by the scheduler before cancellation.
+        notice.onSynchronized();
+        assertNoNotice(delayed);
+        assertNoNotice(enforceJoin);
+
+        Client sameName = new Client("sTeVe");
+        join(sameName);
+        assertNoNotice(sameName);
+        Client fresh = new Client("New");
+        join(fresh);
+        runNext();
+        verify(fresh.player).openInventory(any(Inventory.class));
+    }
+
+    @Test
     void disabledNoticesStillLogInitialAndConfirmedStatus() {
         start(false, 86_400);
         Client client = new Client("Steve");
@@ -364,7 +398,7 @@ class ObserveNoticeTest {
         config.set("observe.notice.enabled", enabled);
         config.set("observe.notice.cooldown-seconds", cooldown);
         config.set("observe.notice.group-number", "123456789012");
-        notice = new ObserveNotice(plugin, () -> view, NoticeSettings.read(config), clock::get);
+        notice = new ObserveNotice(plugin, modes, () -> view, NoticeSettings.read(config), clock::get);
     }
 
     private Client show() {

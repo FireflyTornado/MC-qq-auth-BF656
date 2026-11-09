@@ -56,12 +56,14 @@ TARGET_GROUP_ID=1 MC_API_TOKEN=demo-api-token MC_NOTIFY_TOKEN=demo-notify-token 
 
 另开一个终端运行 `curl --fail http://127.0.0.1:18765/internal/health` 检查进程。需要接入 NapCat、配置 Bot 或编译插件时，按 [部署与构建说明](docs/deployment.md) 操作。
 
-## Minecraft 插件 0.3.2
+## Minecraft 插件 0.4.0
 
 - `OBSERVE` 同步授权名单并记录入服判断。只有成功入服且确认未授权的玩家才会收到可关闭的 QQ 绑定公告。授权服务故障和撤权均允许玩家继续游玩。
 - `ENFORCE` 对新登录执行白名单检查，在服务未就绪时拒绝准入，并按已确认的新名单移出失去授权的在线玩家。
 
-新安装的模板显式使用 `mode: OBSERVE`。从 0.2.0 升级且已有配置缺少 `mode` 时继续使用 `ENFORCE`。管理员可用 `/mcqqauth` 核对模式、同步状态及公告开关。在 `plugins/MCQQAuth/config.yml` 修改模式或设置公告后完整重启 Mohist。QQ 群号、公告文案及维护窗口流程见 [Minecraft 插件部署说明](docs/deployment.md#minecraft-插件构建)。
+管理员可用 `/mcqqauth mode` 查询模式，用 `/mcqqauth mode observe` 或 `/mcqqauth mode enforce` 在线切换。现有 HTTPS/WSS 连接和授权名单继续使用，保存后的模式会在重启时恢复。开启强制模式时，已在线的未授权或状态未知玩家获得当前连接的豁免。需要立即检查在线玩家时，可在授权就绪后执行 `/mcqqauth mode enforce --kick-online`。
+
+新安装默认使用 `OBSERVE`。旧配置缺少 `mode` 时继续使用 `ENFORCE`。从 0.3.2 升级可沿用现有配置，继续支持服务端 Ping/Pong 和 1–16 位游戏名。公告、Token 等设置在启动时读取。操作与回滚步骤见 [Minecraft 插件部署说明](docs/deployment.md#minecraft-插件构建)。
 
 ## 安全边界
 

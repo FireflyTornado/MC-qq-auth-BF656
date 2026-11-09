@@ -1,5 +1,11 @@
 package cn.nightbugclub.mcqqauth;
 
+import org.bukkit.command.CommandSender;
+import org.bukkit.command.PluginCommandYamlParser;
+import org.bukkit.plugin.PluginDescriptionFile;
+import org.bukkit.plugin.PluginManager;
+import org.bukkit.scheduler.BukkitScheduler;
+import org.bukkit.scheduler.BukkitTask;
 import org.eclipse.jetty.http.HttpHeader;
 import org.eclipse.jetty.server.Handler;
 import org.eclipse.jetty.server.HttpConfiguration;
@@ -20,13 +26,17 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.api.parallel.ResourceLock;
+import org.junit.jupiter.api.parallel.Resources;
 
 import java.net.URI;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.List;
 import java.util.Set;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.CompletableFuture;
@@ -40,6 +50,7 @@ import java.util.logging.Logger;
 import static java.util.concurrent.TimeUnit.MILLISECONDS;
 import static java.util.concurrent.TimeUnit.SECONDS;
 import static org.junit.jupiter.api.Assertions.*;
+import static org.mockito.Mockito.*;
 
 @Timeout(20)
 public class AuthorizationServiceTest {
@@ -109,16 +120,81 @@ public class AuthorizationServiceTest {
         take(api.requests).reply(200, snapshot(VERSION, ""));
         take(updates);
 
-        ByteBuffer payload = ByteBuffer.wrap(new byte[]{1, 2, 3, 4});
-        CompletableFuture<Void> sent = new CompletableFuture<>();
-        session.sendPing(payload.asReadOnlyBuffer(),
-                Callback.from(() -> sent.complete(null), sent::completeExceptionally));
-        sent.get(5, SECONDS);
-        assertEquals(payload, take(api.pongs));
+        assertPong(session);
 
         notice(session, VERSION + 1);
         take(api.requests).reply(200, snapshot(VERSION + 1, ""));
         assertEquals(VERSION + 1, take(updates).snapshot().version());
+    }
+
+    @Test
+    @ResourceLock(Resources.SYSTEM_PROPERTIES)
+    void pluginModeCommandsKeepTheSameLiveWssSessionAndConfirmedSnapshot(@TempDir Path pluginData) throws Exception {
+        Files.writeString(pluginData.resolve("config.yml"), """
+                mode: OBSERVE
+                api:
+                  token: %s
+                  snapshot-url: https://localhost:%d/internal/mc/snapshot
+                  websocket-url: wss://localhost:%d/internal/mc/ws
+                """.formatted(TOKEN, api.port(), api.port()));
+        MCQQAuthPlugin plugin = mock(MCQQAuthPlugin.class, CALLS_REAL_METHODS);
+        var server = mock(org.bukkit.Server.class);
+        var scheduler = mock(BukkitScheduler.class);
+        var mainTasks = new LinkedBlockingQueue<Runnable>();
+        when(server.getPluginManager()).thenReturn(mock(PluginManager.class));
+        when(server.isPrimaryThread()).thenReturn(true);
+        doReturn(List.of()).when(server).getOnlinePlayers();
+        when(server.getScheduler()).thenReturn(scheduler);
+        when(scheduler.runTask(eq(plugin), any(Runnable.class))).thenAnswer(call -> {
+            mainTasks.add(call.getArgument(1));
+            return mock(BukkitTask.class);
+        });
+        doReturn(server).when(plugin).getServer();
+        doReturn(pluginData.toFile()).when(plugin).getDataFolder();
+        doReturn(Logger.getAnonymousLogger()).when(plugin).getLogger();
+        doReturn(true).when(plugin).isEnabled();
+        doNothing().when(plugin).saveDefaultConfig();
+        doAnswer(call -> getClass().getResourceAsStream("/config.yml")).when(plugin).getResource("config.yml");
+        try (var descriptor = getClass().getResourceAsStream("/plugin.yml")) {
+            doReturn(new PluginDescriptionFile(descriptor)).when(plugin).getDescription();
+        }
+        var command = PluginCommandYamlParser.parse(plugin).get(0);
+        CommandSender console = mock(CommandSender.class);
+        when(console.hasPermission("mcqqauth.admin")).thenReturn(true);
+
+        String trustStore = System.setProperty("javax.net.ssl.trustStore", keyStore.toString());
+        String trustPassword = System.setProperty("javax.net.ssl.trustStorePassword", PASSWORD);
+        String trustType = System.setProperty("javax.net.ssl.trustStoreType", "PKCS12");
+        try {
+            plugin.onEnable();
+            Session original = take(api.sessions);
+            take(api.requests).reply(200, snapshot(VERSION, "\"a\""));
+            take(mainTasks).run();
+
+            assertTrue(command.execute(console, "mcqqauth", new String[]{"mode", "enforce"}));
+            assertTrue(command.execute(console, "mcqqauth", new String[0]));
+            verify(console).sendMessage("授权版本：" + VERSION);
+            verify(console).sendMessage("有效授权游戏ID：1");
+            assertTrue(command.execute(console, "mcqqauth", new String[]{"mode", "observe"}));
+            assertPong(original);
+            assertNull(api.sessions.poll(200, MILLISECONDS));
+            assertNull(api.requests.poll(200, MILLISECONDS));
+
+            notice(original, VERSION + 1);
+            take(api.requests).reply(200, snapshot(VERSION + 1, "\"a\",\"bb\""));
+            take(mainTasks).run();
+            assertTrue(command.execute(console, "mcqqauth", new String[0]));
+            verify(console).sendMessage("授权版本：" + (VERSION + 1));
+            verify(console).sendMessage("有效授权游戏ID：2");
+        } finally {
+            try {
+                plugin.onDisable();
+            } finally {
+                restoreProperty("javax.net.ssl.trustStore", trustStore);
+                restoreProperty("javax.net.ssl.trustStorePassword", trustPassword);
+                restoreProperty("javax.net.ssl.trustStoreType", trustType);
+            }
+        }
     }
 
     @Test
@@ -334,6 +410,23 @@ public class AuthorizationServiceTest {
         CompletableFuture<Void> sent = new CompletableFuture<>();
         session.sendText(text, Callback.from(() -> sent.complete(null), sent::completeExceptionally));
         sent.get(5, SECONDS);
+    }
+
+    private void assertPong(Session session) throws Exception {
+        ByteBuffer payload = ByteBuffer.wrap(new byte[]{1, 2, 3, 4});
+        CompletableFuture<Void> sent = new CompletableFuture<>();
+        session.sendPing(payload.asReadOnlyBuffer(),
+                Callback.from(() -> sent.complete(null), sent::completeExceptionally));
+        sent.get(5, SECONDS);
+        assertEquals(payload, take(api.pongs));
+    }
+
+    private static void restoreProperty(String key, String value) {
+        if (value == null) {
+            System.clearProperty(key);
+        } else {
+            System.setProperty(key, value);
+        }
     }
 
     private <T> T take(BlockingQueue<T> queue) throws InterruptedException {

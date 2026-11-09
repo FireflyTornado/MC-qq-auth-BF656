@@ -35,6 +35,7 @@ final class ObserveNotice implements Listener {
     private static final int CONFIRM_SLOT = 22;
 
     private final Plugin plugin;
+    private final AuthorizationModeController modes;
     private final Supplier<AuthorizationService.View> view;
     private final NoticeSettings settings;
     private final LongSupplier nanoTime;
@@ -43,9 +44,10 @@ final class ObserveNotice implements Listener {
     private final Map<String, Long> lastShown = new HashMap<>();
     private boolean closed;
 
-    ObserveNotice(Plugin plugin, Supplier<AuthorizationService.View> view,
+    ObserveNotice(Plugin plugin, AuthorizationModeController modes, Supplier<AuthorizationService.View> view,
                   NoticeSettings settings, LongSupplier nanoTime) {
         this.plugin = plugin;
+        this.modes = modes;
         this.view = view;
         this.settings = settings;
         this.nanoTime = nanoTime;
@@ -56,9 +58,13 @@ final class ObserveNotice implements Listener {
         return settings.enabled();
     }
 
+    private boolean observing() {
+        return !closed && modes.mode() == PluginSettings.Mode.OBSERVE;
+    }
+
     @EventHandler(priority = EventPriority.MONITOR)
     public void onJoin(PlayerJoinEvent event) {
-        if (closed) {
+        if (!observing()) {
             return;
         }
         Player player = event.getPlayer();
@@ -78,6 +84,9 @@ final class ObserveNotice implements Listener {
     }
 
     void onSynchronized() {
+        if (!observing()) {
+            return;
+        }
         AuthorizationService.View current = view.get();
         if (!current.ready()) {
             return;
@@ -107,7 +116,7 @@ final class ObserveNotice implements Listener {
     private void show(Visit visit) {
         visit.task = null;
         Player player = visit.player;
-        if (visits.get(player.getUniqueId()) != visit || !player.isOnline()
+        if (!observing() || visits.get(player.getUniqueId()) != visit || !player.isOnline()
                 || player.getOpenInventory().getType() != InventoryType.CRAFTING || onCooldown(visit)) {
             return;
         }
@@ -121,7 +130,10 @@ final class ObserveNotice implements Listener {
 
         visit.notice = candidate;
         player.openInventory(candidate.getInventory());
-        if (isOpen(visit)) {
+        if (!observing() || visits.get(player.getUniqueId()) != visit) {
+            // Another plugin can run a mode command from InventoryOpenEvent.
+            closeInventory(player, candidate);
+        } else if (isOpen(player, candidate)) {
             lastShown.put(visit.nameKey, nanoTime.getAsLong());
             plugin.getLogger().info("[OBSERVE] Player " + player.getName() + ": notice shown");
         } else {
@@ -144,7 +156,8 @@ final class ObserveNotice implements Listener {
             // Bukkit forbids closing the view inside InventoryClickEvent.
             visit.task = plugin.getServer().getScheduler().runTask(plugin, () -> {
                 visit.task = null;
-                closeInventory(visit);
+                closeInventory(visit.player, notice);
+                visit.notice = null;
             });
         }
     }
@@ -177,12 +190,17 @@ final class ObserveNotice implements Listener {
 
     void close() {
         closed = true;
+        clearVisits();
+        lastShown.clear();
+    }
+
+    void clearVisits() {
         List<Visit> remaining = List.copyOf(visits.values());
         visits.clear();
-        lastShown.clear();
         for (Visit visit : remaining) {
             visit.cancelTask();
-            closeInventory(visit);
+            closeInventory(visit.player, visit.notice);
+            visit.notice = null;
         }
     }
 
@@ -191,16 +209,15 @@ final class ObserveNotice implements Listener {
                 + (status == PlayerStatus.UNKNOWN ? ", authorization not ready" : ""));
     }
 
-    private static boolean isOpen(Visit visit) {
-        return visit.notice != null && visit.player.isOnline()
-                && visit.player.getOpenInventory().getTopInventory().getHolder() == visit.notice;
+    private static boolean isOpen(Player player, NoticeInventory notice) {
+        return notice != null && player.isOnline()
+                && player.getOpenInventory().getTopInventory().getHolder() == notice;
     }
 
-    private static void closeInventory(Visit visit) {
-        if (isOpen(visit)) {
-            visit.player.closeInventory();
+    private static void closeInventory(Player player, NoticeInventory notice) {
+        if (isOpen(player, notice)) {
+            player.closeInventory();
         }
-        visit.notice = null;
     }
 
     private static final class Visit {
