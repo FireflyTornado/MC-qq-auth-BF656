@@ -3,22 +3,22 @@ import sqlite3
 from collections import OrderedDict
 
 from nonebot import get_driver, logger, on_command, on_type
-from nonebot.adapters import Event
-
 from nonebot.adapters.onebot.v11 import (
     Bot,
     GroupMessageEvent,
     GroupIncreaseNoticeEvent,
     GroupDecreaseNoticeEvent,
+    Message,
+    MessageSegment,
 )
 from nonebot.adapters.onebot.v11.exception import OneBotV11AdapterException
 from nonebot.permission import SUPERUSER
-from nonebot.rule import Rule
 
 from binding_service import binding_audit_snapshot, revoke_checked_bindings, unbind_player
+from qq_group import TARGET_GROUP_ID, group_rule
+from runtime_status import record_outcome
 
 driver = get_driver()
-TARGET_GROUP_ID = int(driver.config.target_group_id)
 GROUP_ID = str(TARGET_GROUP_ID)
 MEMBER_CHECK_TIMEOUT = 20
 MEMBER_CHECK_RETRY_DELAY = 5
@@ -29,29 +29,15 @@ recent_departures: OrderedDict[tuple[int, int, int, str], None] = OrderedDict()
 bots_outside_group: set[str] = set()
 
 
-def is_target_group(event: Event) -> bool:
-    return isinstance(event, GroupMessageEvent) and event.group_id == TARGET_GROUP_ID
+async def send_member_notice(bot: Bot, message: str | Message) -> None:
+    try:
+        async with asyncio.timeout(5):
+            await bot.send_group_msg(group_id=TARGET_GROUP_ID, message=message)
+    except Exception as exc:
+        logger.warning("[MC-QQ-AUTH] 群成员提示发送失败（{}）", type(exc).__name__)
 
 
-# 1. 测试群消息
-ping = on_command(
-    "认证测试",
-    priority=10,
-    block=True,
-)
-
-
-@ping.handle()
-async def handle_ping(event: GroupMessageEvent):
-    if event.group_id != TARGET_GROUP_ID:
-        return
-
-    await ping.finish(
-        "Minecraft 社区认证机器人运行正常！"
-    )
-
-
-# 2. 监听成员入群
+# 监听成员入群
 member_join = on_type(
     GroupIncreaseNoticeEvent,
     priority=10,
@@ -61,6 +47,7 @@ member_join = on_type(
 
 @member_join.handle()
 async def handle_member_join(
+    bot: Bot,
     event: GroupIncreaseNoticeEvent,
 ):
     global membership_generation
@@ -70,12 +57,19 @@ async def handle_member_join(
     membership_generation += 1
     if event.user_id == event.self_id:
         bots_outside_group.discard(str(event.self_id))
+        return
     logger.info(
         "[MC-QQ-AUTH] 检测到目标群成员加入事件"
     )
+    await send_member_notice(
+        bot,
+        MessageSegment.at(event.user_id)
+        + " 欢迎加入！请用 /绑定 游戏ID 或 /bind 游戏ID 绑定 Minecraft 游戏 ID。\n"
+        "发送 /帮助 或 /help 查看指令。",
+    )
 
 
-# 3. 监听成员退群
+# 监听成员退群
 member_leave = on_type(
     GroupDecreaseNoticeEvent,
     priority=10,
@@ -85,6 +79,7 @@ member_leave = on_type(
 
 @member_leave.handle()
 async def handle_member_leave(
+    bot: Bot,
     event: GroupDecreaseNoticeEvent,
 ):
     global membership_generation
@@ -108,6 +103,7 @@ async def handle_member_leave(
         recent_departures.popitem(last=False)
     membership_generation += 1
     reason = "成员主动退群" if event.sub_type == "leave" else "成员被管理员移出群"
+    notice = "成员已退出群聊。" if event.sub_type == "leave" else "成员已被移出群聊。"
     try:
         name = await asyncio.to_thread(
             unbind_player, GROUP_ID, str(event.user_id), left_at=event.time,
@@ -115,9 +111,12 @@ async def handle_member_leave(
     except sqlite3.Error as exc:
         recent_departures.pop(key, None)
         logger.error("[MC-QQ-AUTH] {}后的撤权事务失败（{}）", reason, type(exc).__name__)
+        await send_member_notice(bot, notice + "Minecraft 授权撤销暂未确认。")
         return
     if name is not None:
         logger.info("[MC-QQ-AUTH] {}，已撤销绑定", reason)
+        notice += "Minecraft 授权已自动撤销。"
+    await send_member_notice(bot, notice)
 
 
 class UnverifiedMembers(ValueError):
@@ -146,9 +145,11 @@ async def reconcile_members(bot: Bot) -> int | None:
         if driver.bots.get(bot.self_id) is not bot or bot.self_id in bots_outside_group:
             return None
         generation = membership_generation
+        outcome = "Unavailable"
         try:
             version, bindings = await asyncio.to_thread(binding_audit_snapshot, GROUP_ID)
             if not bindings:
+                outcome = "OK, 0 revoked"
                 return 0
 
             # NapCat may serve a cached list while refreshing it. Verify two reads
@@ -170,12 +171,19 @@ async def reconcile_members(bot: Bot) -> int | None:
             missing = {qq_id: bindings[qq_id] for qq_id in bindings.keys() - second}
             deleted = await asyncio.to_thread(revoke_checked_bindings, GROUP_ID, version, missing)
             if deleted is None:
+                outcome = "Version changed"
                 logger.warning("[MC-QQ-AUTH] 对账期间授权版本已变化，本次对账已跳过")
+            else:
+                outcome = f"OK, {deleted} revoked"
             return deleted
         except (UnverifiedMembers, TimeoutError, OneBotV11AdapterException) as exc:
+            outcome = "Roster unverified"
             logger.warning("[MC-QQ-AUTH] 群成员名单无法确认，对账已跳过（{}）", type(exc).__name__)
         except sqlite3.Error as exc:
+            outcome = "Database error"
             logger.error("[MC-QQ-AUTH] 授权对账数据库操作失败（{}）", type(exc).__name__)
+        finally:
+            record_outcome("reconcile", outcome)
         return None
 
 
@@ -191,7 +199,9 @@ async def reconcile_on_connect(bot: Bot):
         logger.info("[MC-QQ-AUTH] OneBot 连接后授权对账完成，已撤销 {} 条绑定", count)
 
 
-reconcile = on_command("授权对账", rule=Rule(is_target_group), permission=SUPERUSER, priority=10, block=True)
+reconcile = on_command(
+    "授权对账", aliases={"reconcile"}, rule=group_rule, permission=SUPERUSER, priority=10, block=True,
+)
 
 
 @reconcile.handle()

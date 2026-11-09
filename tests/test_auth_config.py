@@ -474,7 +474,8 @@ class ConfigTests(unittest.TestCase):
         (project / "plugins").mkdir(parents=True)
         for rel in (
             "app_config.py", "bot.py", "binding_service.py", "database.py", "mc_api.py",
-            "notify_client.py", "plugins/qq_bindings.py", "plugins/qq_events.py",
+            "notify_client.py", "qq_group.py", "runtime_status.py", "status_image.py",
+            "plugins/qq_bindings.py", "plugins/qq_events.py", "plugins/status_commands.py",
         ):
             shutil.copyfile(BOT_DIR / rel, project / rel)
         onebot_token = "76543210123456"
@@ -502,7 +503,7 @@ assert mc_api.TARGET_GROUP_ID == "98765"
 adapter = nonebot.get_adapter(Adapter)
 assert adapter.onebot_config.onebot_access_token == os.environ["ONEBOT_ACCESS_TOKEN"]
 assert {plugin.module_name for plugin in nonebot.get_loaded_plugins()} == {
-    "plugins.qq_bindings", "plugins.qq_events",
+    "plugins.qq_bindings", "plugins.qq_events", "plugins.status_commands",
 }
 """
         env = {

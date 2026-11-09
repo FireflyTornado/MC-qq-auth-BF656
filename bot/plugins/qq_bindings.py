@@ -1,34 +1,19 @@
 import asyncio
 import sqlite3
 
-from nonebot import get_driver, logger, on_command
-from nonebot.adapters import Event
+from nonebot import logger, on_command
 from nonebot.adapters.onebot.v11 import (
     GroupMessageEvent,
     Message,
 )
 from nonebot.params import CommandArg
-from nonebot.rule import Rule
 
 from binding_service import (
     bind_player,
     get_binding,
     unbind_player,
 )
-
-
-TARGET_GROUP_ID = int(get_driver().config.target_group_id)
-
-
-def is_target_group(event: Event) -> bool:
-    """仅允许目标 QQ 群触发绑定指令。"""
-    return (
-        isinstance(event, GroupMessageEvent)
-        and event.group_id == TARGET_GROUP_ID
-    )
-
-
-group_rule = Rule(is_target_group)
+from qq_group import group_rule
 
 
 # ========================================
@@ -37,6 +22,7 @@ group_rule = Rule(is_target_group)
 
 bind = on_command(
     "绑定",
+    aliases={"bind"},
     rule=group_rule,
     priority=10,
     block=True,
@@ -98,6 +84,7 @@ async def handle_bind(
 
 query = on_command(
     "我的绑定",
+    aliases={"binding"},
     rule=group_rule,
     priority=10,
     block=True,
@@ -133,6 +120,7 @@ async def handle_query(event: GroupMessageEvent):
 
 unbind = on_command(
     "解绑",
+    aliases={"unbind"},
     rule=group_rule,
     priority=10,
     block=True,

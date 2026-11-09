@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import importlib
 import os
 import sqlite3
@@ -6,10 +7,12 @@ import sys
 import tempfile
 import unittest
 from contextlib import chdir, closing
+from io import BytesIO
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import nonebot
+from PIL import Image
 from nonebot.adapters.onebot.v11 import (
     Adapter, Bot, GroupDecreaseNoticeEvent, GroupIncreaseNoticeEvent, GroupMessageEvent, Message,
 )
@@ -20,6 +23,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "bot"))
 
 import binding_service
 import database
+import runtime_status
 
 GROUP = 101
 OTHER_GROUP = 102
@@ -48,21 +52,25 @@ class QQRevocationTests(unittest.IsolatedAsyncioTestCase):
         cls.driver = nonebot.get_driver()
         cls.driver.register_adapter(Adapter)
         cls.events = importlib.import_module("plugins.qq_events")
+        importlib.import_module("plugins.qq_bindings")
+        cls.status = importlib.import_module("plugins.status_commands")
 
     def setUp(self):
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
         self.path = Path(directory.name) / "auth.db"
         database.init_database(self.path)
-        db_patch = patch.object(binding_service, "DB_PATH", self.path)
-        db_patch.start()
-        self.addCleanup(db_patch.stop)
+        self.enterContext(patch.object(binding_service, "DB_PATH", self.path))
+        self.enterContext(patch.object(database, "DB_PATH", self.path))
+        self.enterContext(patch.object(runtime_status, "_outcomes", {}))
         notify_patch = patch.object(binding_service, "notify_auth_updated", return_value=True)
         self.notify = notify_patch.start()
         self.addCleanup(notify_patch.stop)
         self.events.recent_departures.clear()
         self.events.bots_outside_group.clear()
         self.bot = Bot(nonebot.get_adapter(Adapter), str(BOT))
+        self.send_group = self.enterContext(patch.object(self.bot, "send_group_msg", new_callable=AsyncMock))
+        self.reply = self.enterContext(patch.object(self.bot, "send", new_callable=AsyncMock))
         self.driver.bots[self.bot.self_id] = self.bot
         self.addCleanup(self.driver.bots.pop, self.bot.self_id, None)
         self.addCleanup(self.events.recent_departures.clear)
@@ -104,30 +112,43 @@ class QQRevocationTests(unittest.IsolatedAsyncioTestCase):
             return True
 
         self.notify.side_effect = verify_commit
-        await self.events.handle_member_leave(departure())
+        await self.events.handle_member_leave(self.bot, departure())
         self.assertEqual(self.binding(group=OTHER_GROUP), "Other")
         self.notify.assert_called_once_with()
-        await self.events.handle_member_join(GroupIncreaseNoticeEvent(
+        self.send_group.assert_awaited_once_with(
+            group_id=GROUP, message="成员已退出群聊。Minecraft 授权已自动撤销。",
+        )
+        await self.events.handle_member_join(self.bot, GroupIncreaseNoticeEvent(
             time=DEPARTED_AT + 1, self_id=BOT, post_type="notice", notice_type="group_increase",
             sub_type="approve", group_id=GROUP, user_id=ABSENT, operator_id=MEMBER,
         ))
         self.assertIsNone(self.binding())
+        welcome = self.send_group.call_args.kwargs["message"]
+        self.assertEqual(welcome[0].type, "at")
+        self.assertEqual(welcome[0].data["qq"], str(ABSENT))
+        for command in ("/绑定 游戏ID", "/bind 游戏ID", "/帮助", "/help"):
+            self.assertIn(command, welcome.extract_plain_text())
 
     async def test_kick_revokes_the_member_not_the_operator(self):
         self.bind()
         self.bind(MEMBER, "Alex")
         self.notify.reset_mock()
-        await self.events.handle_member_leave(departure("kick"))
+        await self.events.handle_member_leave(self.bot, departure("kick"))
         self.assertIsNone(self.binding())
         self.assertEqual(self.binding(MEMBER), "Alex")
         self.notify.assert_called_once_with()
+        self.send_group.assert_awaited_once_with(
+            group_id=GROUP, message="成员已被移出群聊。Minecraft 授权已自动撤销。",
+        )
 
     async def test_other_group_and_unbound_departures_are_noops(self):
         self.bind()
         self.notify.reset_mock()
         version = self.version()
-        await self.events.handle_member_leave(departure(group=OTHER_GROUP))
-        await self.events.handle_member_leave(departure(user=MEMBER))
+        await self.events.handle_member_leave(self.bot, departure(group=OTHER_GROUP))
+        self.send_group.assert_not_awaited()
+        await self.events.handle_member_leave(self.bot, departure(user=MEMBER))
+        self.send_group.assert_awaited_once_with(group_id=GROUP, message="成员已退出群聊。")
         self.assertEqual(self.binding(), "Steve")
         self.assertEqual(self.version(), version)
         self.notify.assert_not_called()
@@ -136,21 +157,23 @@ class QQRevocationTests(unittest.IsolatedAsyncioTestCase):
         self.bind()
         event = departure()
         self.notify.reset_mock()
-        await asyncio.gather(*(self.events.handle_member_leave(event) for _ in range(2)))
+        await asyncio.gather(*(self.events.handle_member_leave(self.bot, event) for _ in range(2)))
         self.notify.assert_called_once_with()
+        self.send_group.assert_awaited_once()
         self.bind(name="NewSteve", timestamp=DEPARTED_AT)
         version = self.version()
         self.notify.reset_mock()
-        await self.events.handle_member_leave(event)
+        await self.events.handle_member_leave(self.bot, event)
         self.assertEqual(self.binding(), "NewSteve")
         self.assertEqual(self.version(), version)
         self.notify.assert_not_called()
+        self.send_group.assert_awaited_once()
 
     async def test_old_departure_after_restart_does_not_touch_new_binding(self):
         self.bind(timestamp=DEPARTED_AT + 1)
         version = self.version()
         self.notify.reset_mock()
-        await self.events.handle_member_leave(departure())
+        await self.events.handle_member_leave(self.bot, departure())
         self.assertEqual(self.binding(), "Steve")
         self.assertEqual(self.version(), version)
         self.notify.assert_not_called()
@@ -161,7 +184,7 @@ class QQRevocationTests(unittest.IsolatedAsyncioTestCase):
         version = self.version()
         self.notify.reset_mock()
         with patch.object(self.events.logger, "error") as error:
-            await self.events.handle_member_leave(departure("kick_me", user=BOT))
+            await self.events.handle_member_leave(self.bot, departure("kick_me", user=BOT))
         error.assert_called_once()
         with self.mock_roster(member_rows(BOT, MEMBER)) as request:
             self.assertIsNone(await self.events.reconcile_members(self.bot))
@@ -170,17 +193,42 @@ class QQRevocationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.binding(BOT), "BotUser")
         self.assertEqual(self.version(), version)
         self.notify.assert_not_called()
+        self.send_group.assert_not_awaited()
+
+    async def test_failed_group_message_does_not_undo_or_repeat_revocation(self):
+        self.bind()
+        version = self.version()
+        self.notify.reset_mock()
+
+        async def fail_after_commit(**_):
+            self.assertIsNone(self.binding())
+            self.assertGreater(self.version(), version)
+            raise ActionFailed(retcode=100)
+
+        self.send_group.side_effect = fail_after_commit
+        await self.events.handle_member_leave(self.bot, departure())
+        await self.events.handle_member_leave(self.bot, departure())
+        self.assertIsNone(self.binding())
+        self.notify.assert_called_once_with()
+        self.send_group.assert_awaited_once()
+
+    async def test_join_in_other_group_sends_nothing(self):
+        await self.events.handle_member_join(self.bot, GroupIncreaseNoticeEvent(
+            time=DEPARTED_AT, self_id=BOT, post_type="notice", notice_type="group_increase",
+            sub_type="approve", group_id=OTHER_GROUP, user_id=ABSENT, operator_id=MEMBER,
+        ))
+        self.send_group.assert_not_awaited()
 
     async def test_failed_transaction_rolls_back_and_same_event_can_retry(self):
         self.bind()
         version = self.version()
         self.notify.reset_mock()
         with patch.object(binding_service, "update_auth_version", side_effect=sqlite3.IntegrityError):
-            await self.events.handle_member_leave(departure())
+            await self.events.handle_member_leave(self.bot, departure())
         self.assertEqual(self.binding(), "Steve")
         self.assertEqual(self.version(), version)
         self.notify.assert_not_called()
-        await self.events.handle_member_leave(departure())
+        await self.events.handle_member_leave(self.bot, departure())
         self.assertIsNone(self.binding())
         self.notify.assert_called_once_with()
 
@@ -194,7 +242,7 @@ class QQRevocationTests(unittest.IsolatedAsyncioTestCase):
             reader.execute("BEGIN")
             reader.execute("SELECT version FROM auth_state").fetchone()
             with patch.object(binding_service.sqlite3, "connect", side_effect=lambda path, **_: connect(path, timeout=0.05)):
-                await self.events.handle_member_leave(departure())
+                await self.events.handle_member_leave(self.bot, departure())
         self.assertEqual(self.binding(), "Steve")
         self.assertEqual(self.version(), version)
         self.notify.assert_not_called()
@@ -304,7 +352,7 @@ class QQRevocationTests(unittest.IsolatedAsyncioTestCase):
 
         async def api(action, **_):
             if action == "get_group_detail_info":
-                await self.events.handle_member_join(GroupIncreaseNoticeEvent(
+                await self.events.handle_member_join(self.bot, GroupIncreaseNoticeEvent(
                     time=DEPARTED_AT, self_id=BOT, post_type="notice", notice_type="group_increase",
                     sub_type="approve", group_id=GROUP, user_id=ABSENT, operator_id=MEMBER,
                 ))
@@ -329,3 +377,81 @@ class QQRevocationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(request.await_count, 4)
         self.assertIsNone(self.binding())
         self.notify.assert_called_once_with()
+
+    def group_message(self, text, *, user=ABSENT, group=GROUP):
+        return GroupMessageEvent.model_validate({
+            "time": DEPARTED_AT, "self_id": BOT, "post_type": "message", "message_type": "group",
+            "sub_type": "normal", "message_id": 1, "group_id": group, "user_id": user,
+            "message": Message(text), "original_message": Message(text), "raw_message": text,
+            "font": 0, "sender": {},
+        })
+
+    async def command_reply(self, text, **event_fields):
+        self.reply.reset_mock()
+        await self.bot.handle_event(self.group_message(text, **event_fields))
+        self.reply.assert_awaited_once()
+        return self.reply.call_args.kwargs["message"]
+
+    async def test_bilingual_binding_commands_share_behavior(self):
+        replies = []
+        for bind, query, unbind in (("/绑定", "/我的绑定", "/解绑"), ("/bind", "/binding", "/unbind")):
+            replies.append((
+                str(await self.command_reply(f"{bind} Steve")),
+                str(await self.command_reply(query)),
+                str(await self.command_reply(unbind)),
+            ))
+            self.assertIsNone(self.binding())
+        self.assertEqual(replies[0], replies[1])
+        self.assertIn("绑定成功", replies[0][0])
+        self.assertIn("Steve", replies[0][1])
+        self.assertIn("解绑成功", replies[0][2])
+
+    async def test_bilingual_help_ping_and_reconcile_dispatch(self):
+        self.assertEqual(await self.command_reply("/帮助"), await self.command_reply("/help"))
+        with patch.object(self.status, "check_fastapi", return_value=runtime_status.HealthResult(503, 24)):
+            ping = await self.command_reply("/ping")
+            self.assertEqual(ping, await self.command_reply("/认证测试"))
+            self.assertIn("HTTP 503\nLatency: 24 ms", ping)
+        with patch.object(self.events, "reconcile_members", AsyncMock(return_value=0)) as reconcile:
+            self.assertEqual(
+                await self.command_reply("/reconcile", user=MEMBER),
+                await self.command_reply("/授权对账", user=MEMBER),
+            )
+            self.assertEqual(reconcile.await_count, 2)
+            self.reply.reset_mock()
+            await self.bot.handle_event(self.group_message("/reconcile"))
+            self.reply.assert_not_awaited()
+            self.assertEqual(reconcile.await_count, 2)
+
+    async def test_ping_failure_reply_explains_timeout_or_connection_failure(self):
+        for reason in ("Timeout", "Connection failed"):
+            with patch.object(self.status, "check_fastapi", return_value=runtime_status.HealthResult(None, 12, reason)):
+                message = await self.command_reply("/ping")
+                self.assertIn(f"FastAPI Health: {reason}\nLatency: 12 ms", message)
+
+    async def test_info_requires_superuser_and_sends_png_for_both_aliases(self):
+        with patch.object(runtime_status, "check_fastapi", return_value=runtime_status.HealthResult(200, 15)):
+            await self.status.remember_connection(self.bot)
+            for alias in ("/信息", "/info"):
+                self.reply.reset_mock()
+                await self.bot.handle_event(self.group_message(alias))
+                self.reply.assert_not_awaited()
+                image = await self.command_reply(alias, user=MEMBER)
+                self.assertEqual(image.type, "image")
+                prefix, payload = image.data["file"].split("://", 1)
+                self.assertEqual(prefix, "base64")
+                with Image.open(BytesIO(base64.b64decode(payload))) as decoded:
+                    self.assertEqual(decoded.format, "PNG")
+                    decoded.verify()
+            await self.status.forget_connection(self.bot)
+            self.assertNotIn(self.bot, self.status.connected_at)
+
+    async def test_commands_in_other_group_do_not_respond_and_status_has_no_matcher(self):
+        for text in (
+            "/绑定 Steve", "/bind Steve", "/解绑", "/unbind", "/我的绑定", "/binding",
+            "/认证测试", "/ping", "/帮助", "/help", "/授权对账", "/reconcile", "/信息", "/info",
+        ):
+            await self.bot.handle_event(self.group_message(text, group=OTHER_GROUP, user=MEMBER))
+        await self.bot.handle_event(self.group_message("/status", user=MEMBER))
+        self.reply.assert_not_awaited()
+        self.notify.assert_not_called()

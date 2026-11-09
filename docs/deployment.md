@@ -34,7 +34,9 @@ cp -n bot/.env.example bot/.env
 
 通知默认发送到 `http://127.0.0.1:18765/internal/mc/notify`。可用 `MC_NOTIFY_URL` 覆盖为可信网络上的直连 HTTP(S) 地址。通知请求绕过环境代理并拒绝重定向。
 
-群成员对账在 OneBot 连接成功后自动执行。若需开放手动对账，在 Bot 的运行配置中填写 NoneBot 的 `SUPERUSERS` JSON 数组，配置的超级用户可在目标群发送 `/授权对账`。群详情交叉校验依赖当前 Compose 固定的 NapCat 所提供的 `get_group_detail_info`。名单请求失败、为空、两次名单不一致或人数校验失败时，对账跳过撤权。
+群成员对账在 OneBot 连接成功后自动执行。在 Bot 运行配置中填写 NoneBot 的 `SUPERUSERS` JSON 数组后，配置的超级用户可在目标群使用 `/授权对账` 或 `/reconcile` 触发对账，并用 `/信息` 或 `/info` 查看状态图。群详情交叉校验依赖当前 Compose 固定的 NapCat 所提供的 `get_group_detail_info`。名单请求失败、为空、两次名单不一致或人数校验失败时，对账跳过撤权。
+
+`/认证测试` 和 `/ping` 访问本机 `127.0.0.1:18765/internal/health`，返回状态码与耗时。状态图额外展示 SQLite 只读检查、主机指标和 Bot 本次运行中记录的最近对账及通知结果。超级用户触发后，图片发送到目标群，全体群成员可见。状态图使用英文标签和 UTC 时间，磁盘优先统计 `/opt`，缺失时统计根目录。Bot 重启后，历史结果会从下一次执行开始记录。
 
 ## Ubuntu systemd 部署
 
@@ -121,6 +123,8 @@ sudo systemctl restart mc-qq-api.service mc-qq-bot.service
 两个服务由 systemd 在异常退出 5 秒后尝试重启。管理员停止服务时，systemd 先发送 SIGTERM，若 30 秒内仍未退出则强制终止。开机自启由管理员显式控制，`enable` 和 `disable` 本身不启动或停止进程。若只取消 API 自启，已启用的 Bot 仍可在启动时拉起 API。
 
 升级到阶段 3.4.2 时，按维护流程重启 `mc-qq-api.service` 和 `mc-qq-bot.service`，先确认 API 健康再启动 Bot。现有 SQLite 结构和依赖锁可直接使用。游戏端继续使用现有插件，API 重启后插件会自动重连并读取最新快照。
+
+升级到阶段 3.4.2.1 时，用更新后的 `requirements.txt` 安装 Pillow 和 psutil，再重启 Bot 以加载新指令。手工更新时，API 本身无需重启。现有升级工具会将依赖锁变更视为共享依赖更新，并安排重启 API 和 Bot。
 
 ```sh
 sudo systemctl enable mc-qq-api.service mc-qq-bot.service

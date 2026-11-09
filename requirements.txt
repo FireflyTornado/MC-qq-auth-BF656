@@ -16,7 +16,9 @@ multidict==7.2.1
 nonebot-adapter-onebot==2.4.6
 nonebot2[websockets]==2.5.0
 opentelemetry-api==1.45.2
+pillow==13.0.0
 propcache==0.5.4
+psutil==7.2.2
 pydantic==2.14.3
 pydantic-core==2.50.4
 pygtrie==2.6.2
