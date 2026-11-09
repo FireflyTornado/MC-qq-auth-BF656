@@ -13,6 +13,7 @@ from binding_service import (
     get_binding,
     unbind_player,
 )
+import message_config
 from qq_group import group_rule
 
 
@@ -37,7 +38,7 @@ async def handle_bind(
     mc_name = args.extract_plain_text().strip()
 
     if not mc_name:
-        await bind.finish("用法：/绑定 Minecraft玩家名")
+        await bind.finish(message_config.MESSAGES.render("commands.bind.usage"))
 
     group_id = str(event.group_id)
     qq_id = str(event.user_id)
@@ -51,31 +52,9 @@ async def handle_bind(
         )
     except sqlite3.Error:
         logger.exception("绑定数据库操作失败")
-        await bind.finish("绑定服务发生错误，请稍后重试")
+        await bind.finish(message_config.MESSAGES.render("commands.bind.error"))
 
-    if status == "invalid_name":
-        await bind.finish(
-            "游戏 ID 格式不正确。\n"
-            "仅支持 3～16 位英文字母、数字和下划线。"
-        )
-
-    if status == "already_bound":
-        await bind.finish(
-            f"你已经绑定了游戏 ID：{value}\n"
-            "如需更换，请先使用 /解绑"
-        )
-
-    if status == "name_taken":
-        await bind.finish(
-            "该游戏 ID 已经被绑定，无法重复绑定。"
-        )
-
-    if status == "success":
-        await bind.finish(
-            f"绑定成功！\n"
-            f"Minecraft ID：{value}\n"
-            "你的绑定记录已保存。"
-        )
+    await bind.finish(message_config.MESSAGES.render(f"commands.bind.{status}", mc_name=value))
 
 
 # ========================================
@@ -101,17 +80,12 @@ async def handle_query(event: GroupMessageEvent):
         )
     except sqlite3.Error:
         logger.exception("查询绑定数据库失败")
-        await query.finish("查询失败，请稍后重试")
+        await query.finish(message_config.MESSAGES.render("commands.binding.error"))
 
     if mc_name is None:
-        await query.finish(
-            "你还没有绑定 Minecraft 游戏 ID。\n"
-            "请使用 /绑定 玩家名"
-        )
+        await query.finish(message_config.MESSAGES.render("commands.binding.not_bound"))
 
-    await query.finish(
-        f"当前绑定的 Minecraft ID：{mc_name}"
-    )
+    await query.finish(message_config.MESSAGES.render("commands.binding.success", mc_name=mc_name))
 
 
 # ========================================
@@ -137,13 +111,9 @@ async def handle_unbind(event: GroupMessageEvent):
         )
     except sqlite3.Error:
         logger.exception("解绑数据库操作失败")
-        await unbind.finish("解绑失败，请稍后重试")
+        await unbind.finish(message_config.MESSAGES.render("commands.unbind.error"))
 
     if mc_name is None:
-        await unbind.finish("你当前没有有效的绑定记录。")
+        await unbind.finish(message_config.MESSAGES.render("commands.unbind.not_bound"))
 
-    await unbind.finish(
-        f"解绑成功！\n"
-        f"原 Minecraft ID：{mc_name}\n"
-        "绑定记录已删除。"
-    )
+    await unbind.finish(message_config.MESSAGES.render("commands.unbind.success", mc_name=mc_name))

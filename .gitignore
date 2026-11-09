@@ -23,6 +23,7 @@ id_ed25519
 id_ed25519_sk
 
 # Runtime state and databases
+/bot/messages.yml
 /bot/data/
 /napcat/data/
 *.db

@@ -164,7 +164,7 @@ class UpdateTests(unittest.TestCase):
         self.upstream.mkdir()
         self.git(self.upstream, "init", "-b", "main", "--template=")
         for path, content in {
-            ".gitignore": "/bot/.env\n/napcat/.env\n/bot/data/\n/napcat/data/\n/bot/.venv/\n*.local\n",
+            ".gitignore": (SOURCE.parent.parent / ".gitignore").read_text(encoding="utf-8"),
             "README.md": "before\n", "requirements.txt": "example==1.0\n",
             "requirements.in": "example==1.0\n",
             "bot/bot.py": "# baseline\n", "bot/mc_api.py": "# baseline\n",
@@ -297,13 +297,27 @@ exec "$UPDATE_REAL_GIT" "${args[@]}"
         self.assertEqual(self.observed(), [])
 
     def test_ignored_incoming_collision(self):
-        self.write(self.upstream / "placeholder.local", "incoming\n")
-        self.git(self.upstream, "add", "-f", "--", "placeholder.local")
+        path = "bot/messages.yml"
+        self.write(self.upstream / path, "incoming\n")
+        self.git(self.upstream, "add", "-f", "--", path)
         target = self.commit_upstream()
-        self.write(self.repo / "placeholder.local", "local\n")
+        self.write(self.repo / path, "local\n")
         self.assertIn("conflicts", self.run_tool("--apply", target))
-        self.assertEqual((self.repo / "placeholder.local").read_text(), "local\n")
+        self.assertEqual((self.repo / path).read_text(), "local\n")
         self.assertEqual(self.observed(), ["fetch"])
+
+    def test_update_preserves_ignored_message_config(self):
+        path = "bot/messages.yml"
+        local = "events: {leave: {enabled: false}}\n"
+        self.write(self.repo / path, local)
+        lock = (SOURCE.parent.parent / "requirements.txt").read_text(encoding="utf-8")
+        self.write(self.upstream / "requirements.txt", lock)
+        target = self.incoming("bot/messages.example.yml")
+        out = self.run_tool("--apply", target, okay=True)
+        self.assertIn("dependencies=1 migration=0", out)
+        self.assertEqual((self.repo / path).read_text(encoding="utf-8"), local)
+        self.assertTrue((self.repo / "bot/messages.example.yml").is_file())
+        self.assertEqual(self.git(self.repo, "ls-files", "--", path), "")
 
     def test_missing_or_nonhex_sha(self):
         self.assertIn("missing or ambiguous", self.run_tool("--apply", "0123456789"))

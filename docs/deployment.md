@@ -36,7 +36,56 @@ cp -n bot/.env.example bot/.env
 
 群成员对账在 OneBot 连接成功后自动执行。在 Bot 运行配置中填写 NoneBot 的 `SUPERUSERS` JSON 数组后，配置的超级用户可在目标群使用 `/授权对账` 或 `/reconcile` 触发对账，并用 `/信息` 或 `/info` 查看状态图。群详情交叉校验依赖当前 Compose 固定的 NapCat 所提供的 `get_group_detail_info`。名单请求失败、为空、两次名单不一致或人数校验失败时，对账跳过撤权。
 
-`/认证测试` 和 `/ping` 访问本机 `127.0.0.1:18765/internal/health`，返回状态码与耗时。状态图额外展示 SQLite 只读检查、主机指标和 Bot 本次运行中记录的最近对账及通知结果。超级用户触发后，图片发送到目标群，全体群成员可见。状态图使用英文标签和 UTC 时间，磁盘优先统计 `/opt`，缺失时统计根目录。Bot 重启后，历史结果会从下一次执行开始记录。
+`/认证测试` 和 `/ping` 访问本机 `127.0.0.1:18765/internal/health`，返回状态码与耗时。状态图额外展示 SQLite 只读检查、主机指标和 Bot 本次运行中记录的最近对账及通知结果。超级用户触发后，图片发送到目标群，全体群成员可见。状态图默认使用英文标签和 UTC 时间，磁盘优先统计 `/opt`，缺失时统计根目录。Bot 重启后，历史结果会从下一次执行开始记录。
+
+### 机器人文案与群通知
+
+Bot 在启动时读取同目录的 UTF-8 文件 `messages.yml`。在 Ubuntu 首次升级到 3.4.2.2 时，先更新源码和依赖，再创建配置。以下命令适用于以 root 运行的 [Bot unit](../deploy/systemd/mc-qq-bot.service)。创建时使用仅所有者可读写的权限，文件已存在时保留原件。
+
+```bash
+cd /opt/mc-qq-auth
+sudo sh -c 'umask 077; set -C; cat bot/messages.example.yml > bot/messages.yml'
+sudoedit /opt/mc-qq-auth/bot/messages.yml
+```
+
+实际运行用户若与模板不同，将文件的读取权限授予该用户，并仅让负责维护的系统用户修改。需要完整示例时查看 [messages.example.yml](../bot/messages.example.yml)，也可以在 `messages.yml` 中只填写要覆盖的字段。例如，以下配置启用自定义欢迎语，关闭主动退群提示，保留被移出群的提示。
+
+```yaml
+events:
+  join:
+    enabled: true
+    message: |-
+      欢迎 {member} 加入服务器社区！
+      请发 /bind 游戏ID 完成绑定。
+  leave:
+    enabled: false
+  kick:
+    enabled: true
+commands:
+  bind:
+    success: "已绑定 Minecraft ID：{mc_name}"
+  help:
+    message: "发送 /bind 游戏ID 绑定账号，发送 /binding 查询。"
+info:
+  title: "社区授权状态"
+  footer: "Minecraft 社区"
+  labels:
+    bindings: "有效绑定"
+```
+
+三个开关分别控制入群、主动退群和被移出群的消息。关闭任意开关后，成员事件记录、退群撤权和授权同步照常执行。离群通知会按撤权结果选择 `revoked`、`no_binding` 或 `failed`。
+
+中文和英文别名共用 `commands` 下的字段。使用 `|-` 编写多行回复，使用 `{{` 和 `}}` 显示字面花括号。每个字段可用的占位符见模板注释。`{member}` 在欢迎语中生成对新成员的 QQ @。其他动态值和配置文案均作为纯文本发送。指令权限继续由目标群和 `SUPERUSERS` 控制。
+
+每条文案最多 1000 字符，配置文件最多 64 KiB。缺失字段、空文案、类型错误、非法占位符和过长文案使用该字段的内置默认值。请用布尔值 `true` 或 `false` 设置通知开关。无法解析或读取文件时使用全部内置默认值，日志只记录错误类别和已知字段。状态图标题、页脚和标签按单行显示，超宽时截断并加省略号。Ubuntu 上如需自定义中文状态图文字，可用 `sudo apt install fonts-noto-cjk` 安装字体。Pillow 会在字体缺失时使用内置字体，内置字体的中文覆盖有限。
+
+日常编辑 `messages.yml` 后，只需重启 Bot。
+
+```bash
+sudo systemctl restart mc-qq-bot.service
+```
+
+`bot/messages.yml` 是 Git 忽略的生产配置。后续升级沿用该文件，可在升级前将其备份到私有目录。安全升级工具会拒绝与现有本地文件冲突的传入路径。首次升级前已创建配置的环境，应先将该文件移到私有备份目录，升级完成后放回。后续模板新增字段会由内置默认值补齐。
 
 ## Ubuntu systemd 部署
 
@@ -126,6 +175,8 @@ sudo systemctl restart mc-qq-api.service mc-qq-bot.service
 
 升级到阶段 3.4.2.1 时，用更新后的 `requirements.txt` 安装 Pillow 和 psutil，再重启 Bot 以加载新指令。手工更新时，API 本身无需重启。现有升级工具会将依赖锁变更视为共享依赖更新，并安排重启 API 和 Bot。
 
+升级到阶段 3.4.2.2 时，用更新后的 `requirements.txt` 安装 PyYAML。现有安全升级工具会提前下载锁定的 wheel，并按共享依赖更新流程重启 API 和 Bot。升级完成后可按 [机器人文案与群通知](#机器人文案与群通知) 创建或恢复配置。
+
 ```sh
 sudo systemctl enable mc-qq-api.service mc-qq-bot.service
 sudo systemctl disable mc-qq-api.service mc-qq-bot.service
@@ -209,7 +260,7 @@ docker inspect mc-qq-napcat --format '{{.State.Status}}'
 2. 确认当前分支为 `main`，`git status --short` 没有待处理变更，并用 `git merge-base --is-ancestor HEAD "$target_commit"` 确认可快进。`target_commit` 应设为已核对的完整 SHA。检查目标提交不会跟踪或覆盖现有私有配置和数据。下例应没有输出，其他自定义运行路径也应核对。
 
    ```sh
-   git ls-tree -r --name-only "$target_commit" -- .env .venv bot/.env bot/.venv bot/data napcat/.env napcat/data
+   git ls-tree -r --name-only "$target_commit" -- .env .venv bot/.env bot/.venv bot/data bot/messages.yml napcat/.env napcat/data
    ```
 
 3. 用 SQLite `.backup` 做一致性快照。以下命令在同一个 Bash 会话中执行，要求已安装 `sqlite3` CLI。遇到任一步失败都应停在备份阶段。
@@ -224,11 +275,11 @@ docker inspect mc-qq-napcat --format '{{.State.Status}}'
      test "$(sudo sqlite3 -readonly -batch -bail "$backup_db" 'PRAGMA integrity_check;')" = ok
    ```
 
-4. 停止受影响服务。更新两项服务共用的源码、依赖或数据库时，先停 Bot，再停 API。需要迁移时，同时停止其他写入者，并在停写后重新执行第 3 步，在新的私有备份目录中保存最后一次已提交的状态。保留已有 `.env`、`bot/data/`、`bot/.venv/` 和 NapCat 挂载。
-5. 拉取已核对的提交。快进失败或当前 SHA 与审核目标不同，先查明原因。安装锁定依赖时使用生产虚拟环境，保持相关服务停止。
+4. 停止受影响服务。更新两项服务共用的源码、依赖或数据库时，先停 Bot，再停 API。需要迁移时，同时停止其他写入者，并在停写后重新执行第 3 步，在新的私有备份目录中保存最后一次已提交的状态。保留已有 `.env`、`bot/messages.yml`、`bot/data/`、`bot/.venv/` 和 NapCat 挂载。
+5. 快进到已核对的提交，并拒绝覆盖已忽略的本地文件。快进失败或当前 SHA 与审核目标不同，先查明原因。安装锁定依赖时使用生产虚拟环境，保持相关服务停止。
 
    ```sh
-   git pull --ff-only origin "$target_commit" &&
+   git merge --ff-only --no-autostash --no-overwrite-ignore "$target_commit" &&
      test "$(git rev-parse HEAD)" = "$target_commit" &&
      sudo /opt/mc-qq-auth/bot/.venv/bin/python -m pip install -r requirements.txt
    ```

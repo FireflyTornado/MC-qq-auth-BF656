@@ -6,6 +6,7 @@ from nonebot import get_driver, logger, on_command
 from nonebot.adapters.onebot.v11 import Bot, MessageSegment
 from nonebot.permission import SUPERUSER
 
+import message_config
 from qq_group import TARGET_GROUP_ID, group_rule
 from runtime_status import check_fastapi, collect_status
 from status_image import render_status
@@ -33,23 +34,19 @@ info = on_command("信息", aliases={"info"}, rule=group_rule, permission=SUPERU
 
 @help_command.handle()
 async def handle_help() -> None:
-    await help_command.finish(
-        "[MC-QQ-Auth] 指令帮助\n"
-        "/绑定 游戏ID 或 /bind 游戏ID · 绑定 Minecraft 游戏 ID\n"
-        "/我的绑定 或 /binding · 查询自己的绑定\n"
-        "/解绑 或 /unbind · 撤销自己的绑定\n"
-        "/认证测试 或 /ping · 检查授权 API\n"
-        "/帮助 或 /help · 显示本帮助\n"
-        "超级用户专用\n"
-        "/信息 或 /info · 查看状态图片\n"
-        "/授权对账 或 /reconcile · 核对群成员与授权"
-    )
+    await help_command.finish(message_config.MESSAGES.render("commands.help.message"))
 
 
 @ping.handle()
 async def handle_ping() -> None:
     result = await asyncio.to_thread(check_fastapi)
-    await ping.finish(f"[MC-QQ-Auth] Ping\nFastAPI Health: {result.summary}\nLatency: {result.latency_ms:.0f} ms")
+    if result.status_code is not None:
+        outcome = "success"
+    else:
+        outcome = {"Timeout": "timeout", "Connection failed": "connection_error"}.get(result.error, "error")
+    await ping.finish(message_config.MESSAGES.render(
+        f"commands.ping.{outcome}", status_code=result.status_code, latency_ms=round(result.latency_ms),
+    ))
 
 
 def _status_png(connected: bool, connected_for: float | None) -> bytes:
@@ -59,7 +56,7 @@ def _status_png(connected: bool, connected_for: float | None) -> bytes:
 @info.handle()
 async def handle_info(bot: Bot) -> None:
     if info_lock.locked():
-        await info.finish("状态图正在生成，请稍后重试。")
+        await info.finish(message_config.MESSAGES.render("commands.info.busy"))
     async with info_lock:
         connected = driver.bots.get(bot.self_id) is bot
         started = connected_at.get(bot)
@@ -68,5 +65,5 @@ async def handle_info(bot: Bot) -> None:
             png = await asyncio.to_thread(_status_png, connected, connected_for)
         except Exception as exc:
             logger.warning("[MC-QQ-AUTH] 状态图生成失败（{}）", type(exc).__name__)
-            await info.finish("状态图暂不可用，请稍后重试。")
+            await info.finish(message_config.MESSAGES.render("commands.info.error"))
     await info.finish(MessageSegment.image(png, cache=False))

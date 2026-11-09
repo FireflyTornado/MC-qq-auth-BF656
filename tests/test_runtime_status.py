@@ -3,18 +3,19 @@ import sys
 import tempfile
 import unittest
 from contextlib import closing
-from datetime import UTC
+from datetime import UTC, datetime
 from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
 from urllib.error import URLError
 from unittest.mock import patch
 
-from PIL import Image
+from PIL import Image, ImageDraw
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "bot"))
 
 import database
+import message_config
 import notify_client
 import runtime_status
 from status_image import HEIGHT, WIDTH, render_status
@@ -111,6 +112,48 @@ class RuntimeStatusTests(unittest.TestCase):
         http.assert_called_once_with("127.0.0.1", 18765, timeout=2)
         connection.request.assert_called_once_with("GET", "/internal/health")
         connection.close.assert_called_once_with()
+
+    def test_custom_status_text_fits_title_label_and_footer_regions(self):
+        path = self.path.with_name("messages.yml")
+        long_text = "很长的状态名称" * 80
+        path.write_text(
+            f'info:\n  title: "{long_text}"\n  footer: "{long_text}"\n  labels:\n'
+            f'    bot: "社群机器人"\n    api: "{long_text}"\n    onebot: [invalid]\n',
+            encoding="utf-8",
+        )
+        messages = message_config.load_messages(path)
+        status = runtime_status.RuntimeStatus(
+            (("Service health", (("Bot", "Running"), ("OneBot", "Connected"), ("FastAPI", "HTTP 200"))),),
+            datetime(2026, 11, 9, tzinfo=UTC),
+        )
+        boxes = {}
+        draw_text = ImageDraw.ImageDraw.text
+
+        def capture(draw, position, text, **options):
+            boxes[position] = (text, draw.textbbox(
+                position, text, font=options["font"], anchor=options.get("anchor"),
+            ))
+            return draw_text(draw, position, text, **options)
+
+        with (
+            patch.object(message_config, "MESSAGES", messages),
+            patch.object(ImageDraw.ImageDraw, "text", autospec=True, side_effect=capture),
+        ):
+            with Image.open(BytesIO(render_status(status))) as image:
+                image.verify()
+
+        self.assertEqual(boxes[58, 244][0], "社群机器人")
+        self.assertEqual(boxes[58, 304][0], "OneBot")
+        for position, right, bottom in (
+            ((36, 65), WIDTH - 36, 123),
+            ((58, 364), 408, 386),
+            ((36, 945), boxes[WIDTH - 36, 945][1][0] - 24, HEIGHT),
+        ):
+            with self.subTest(position=position):
+                rendered, box = boxes[position]
+                self.assertTrue(rendered.endswith("…"))
+                self.assertLessEqual(box[2], right + 1)
+                self.assertLessEqual(box[3], bottom)
 
     def test_health_sanitizes_timeout_and_connection_errors(self):
         for exc, reason in ((TimeoutError, "Timeout"), (ConnectionRefusedError, "Connection failed")):

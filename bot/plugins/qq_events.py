@@ -1,6 +1,7 @@
 import asyncio
 import sqlite3
 from collections import OrderedDict
+from typing import Literal
 
 from nonebot import get_driver, logger, on_command, on_type
 from nonebot.adapters.onebot.v11 import (
@@ -14,6 +15,7 @@ from nonebot.adapters.onebot.v11 import (
 from nonebot.adapters.onebot.v11.exception import OneBotV11AdapterException
 from nonebot.permission import SUPERUSER
 
+import message_config
 from binding_service import binding_audit_snapshot, revoke_checked_bindings, unbind_player
 from qq_group import TARGET_GROUP_ID, group_rule
 from runtime_status import record_outcome
@@ -25,11 +27,11 @@ MEMBER_CHECK_RETRY_DELAY = 5
 RECENT_DEPARTURE_LIMIT = 1024
 reconcile_lock = asyncio.Lock()
 membership_generation = 0
-recent_departures: OrderedDict[tuple[int, int, int, str], None] = OrderedDict()
+recent_departures: OrderedDict[tuple[int, int, int, str], Literal["handled", "failed"]] = OrderedDict()
 bots_outside_group: set[str] = set()
 
 
-async def send_member_notice(bot: Bot, message: str | Message) -> None:
+async def send_member_notice(bot: Bot, message: Message) -> None:
     try:
         async with asyncio.timeout(5):
             await bot.send_group_msg(group_id=TARGET_GROUP_ID, message=message)
@@ -61,12 +63,9 @@ async def handle_member_join(
     logger.info(
         "[MC-QQ-AUTH] 检测到目标群成员加入事件"
     )
-    await send_member_notice(
-        bot,
-        MessageSegment.at(event.user_id)
-        + " 欢迎加入！请用 /绑定 游戏ID 或 /bind 游戏ID 绑定 Minecraft 游戏 ID。\n"
-        "发送 /帮助 或 /help 查看指令。",
-    )
+    if message_config.MESSAGES.enabled("join"):
+        message = message_config.MESSAGES.render("events.join.message", member=MessageSegment.at(event.user_id))
+        await send_member_notice(bot, message)
 
 
 # 监听成员退群
@@ -96,27 +95,32 @@ async def handle_member_leave(
         return
 
     key = (event.user_id, event.time, event.operator_id, event.sub_type)
-    if key in recent_departures:
+    previous = recent_departures.get(key)
+    if previous == "handled":
         return
-    recent_departures[key] = None
+    recent_departures[key] = "handled"
+    recent_departures.move_to_end(key)
     if len(recent_departures) > RECENT_DEPARTURE_LIMIT:
         recent_departures.popitem(last=False)
     membership_generation += 1
     reason = "成员主动退群" if event.sub_type == "leave" else "成员被管理员移出群"
-    notice = "成员已退出群聊。" if event.sub_type == "leave" else "成员已被移出群聊。"
     try:
         name = await asyncio.to_thread(
             unbind_player, GROUP_ID, str(event.user_id), left_at=event.time,
         )
     except sqlite3.Error as exc:
-        recent_departures.pop(key, None)
+        if key in recent_departures:
+            recent_departures[key] = "failed"
         logger.error("[MC-QQ-AUTH] {}后的撤权事务失败（{}）", reason, type(exc).__name__)
-        await send_member_notice(bot, notice + "Minecraft 授权撤销暂未确认。")
-        return
-    if name is not None:
-        logger.info("[MC-QQ-AUTH] {}，已撤销绑定", reason)
-        notice += "Minecraft 授权已自动撤销。"
-    await send_member_notice(bot, notice)
+        outcome = "failed"
+    else:
+        outcome = "no_binding"
+        if name is not None:
+            logger.info("[MC-QQ-AUTH] {}，已撤销绑定", reason)
+            outcome = "revoked"
+    # Keep retrying failed transactions, while suppressing repeated failure messages.
+    if message_config.MESSAGES.enabled(event.sub_type) and (previous, outcome) != ("failed", "failed"):
+        await send_member_notice(bot, message_config.MESSAGES.render(f"events.{event.sub_type}.{outcome}"))
 
 
 class UnverifiedMembers(ValueError):
@@ -207,8 +211,8 @@ reconcile = on_command(
 @reconcile.handle()
 async def handle_reconcile(bot: Bot, event: GroupMessageEvent):
     if reconcile_lock.locked():
-        await reconcile.finish("授权对账正在执行，请稍后重试。")
+        await reconcile.finish(message_config.MESSAGES.render("commands.reconcile.busy"))
     count = await reconcile_members(bot)
     if count is None:
-        await reconcile.finish("授权对账未完成，请检查群成员名单和服务日志。")
-    await reconcile.finish(f"授权对账完成，已撤销 {count} 条离群绑定。")
+        await reconcile.finish(message_config.MESSAGES.render("commands.reconcile.failed"))
+    await reconcile.finish(message_config.MESSAGES.render("commands.reconcile.success", count=count))

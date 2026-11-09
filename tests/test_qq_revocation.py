@@ -23,6 +23,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "bot"))
 
 import binding_service
 import database
+import message_config
 import runtime_status
 
 GROUP = 101
@@ -37,6 +38,13 @@ def departure(sub_type="leave", group=GROUP, user=ABSENT, timestamp=DEPARTED_AT)
     return GroupDecreaseNoticeEvent(
         time=timestamp, self_id=BOT, post_type="notice", notice_type="group_decrease",
         sub_type=sub_type, group_id=group, user_id=user, operator_id=MEMBER,
+    )
+
+
+def arrival(group=GROUP, user=ABSENT, timestamp=DEPARTED_AT):
+    return GroupIncreaseNoticeEvent(
+        time=timestamp, self_id=BOT, post_type="notice", notice_type="group_increase",
+        sub_type="approve", group_id=group, user_id=user, operator_id=MEMBER,
     )
 
 
@@ -62,6 +70,7 @@ class QQRevocationTests(unittest.IsolatedAsyncioTestCase):
         database.init_database(self.path)
         self.enterContext(patch.object(binding_service, "DB_PATH", self.path))
         self.enterContext(patch.object(database, "DB_PATH", self.path))
+        self.enterContext(patch.object(message_config, "MESSAGES", message_config.MessageConfig(message_config.DEFAULTS)))
         self.enterContext(patch.object(runtime_status, "_outcomes", {}))
         notify_patch = patch.object(binding_service, "notify_auth_updated", return_value=True)
         self.notify = notify_patch.start()
@@ -82,6 +91,14 @@ class QQRevocationTests(unittest.IsolatedAsyncioTestCase):
 
     def binding(self, user=ABSENT, group=GROUP):
         return binding_service.get_binding(str(group), str(user))
+
+    def configure(self, source):
+        path = self.path.with_name("messages.yml")
+        path.write_text(source, encoding="utf-8")
+        return patch.object(message_config, "MESSAGES", message_config.load_messages(path))
+
+    def assert_notice(self, expected):
+        self.send_group.assert_awaited_once_with(group_id=GROUP, message=Message(expected))
 
     def version(self):
         with closing(sqlite3.connect(self.path)) as conn:
@@ -115,13 +132,8 @@ class QQRevocationTests(unittest.IsolatedAsyncioTestCase):
         await self.events.handle_member_leave(self.bot, departure())
         self.assertEqual(self.binding(group=OTHER_GROUP), "Other")
         self.notify.assert_called_once_with()
-        self.send_group.assert_awaited_once_with(
-            group_id=GROUP, message="成员已退出群聊。Minecraft 授权已自动撤销。",
-        )
-        await self.events.handle_member_join(self.bot, GroupIncreaseNoticeEvent(
-            time=DEPARTED_AT + 1, self_id=BOT, post_type="notice", notice_type="group_increase",
-            sub_type="approve", group_id=GROUP, user_id=ABSENT, operator_id=MEMBER,
-        ))
+        self.assert_notice("成员已退出群聊。Minecraft 授权已自动撤销。")
+        await self.events.handle_member_join(self.bot, arrival(timestamp=DEPARTED_AT + 1))
         self.assertIsNone(self.binding())
         welcome = self.send_group.call_args.kwargs["message"]
         self.assertEqual(welcome[0].type, "at")
@@ -137,9 +149,7 @@ class QQRevocationTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(self.binding())
         self.assertEqual(self.binding(MEMBER), "Alex")
         self.notify.assert_called_once_with()
-        self.send_group.assert_awaited_once_with(
-            group_id=GROUP, message="成员已被移出群聊。Minecraft 授权已自动撤销。",
-        )
+        self.assert_notice("成员已被移出群聊。Minecraft 授权已自动撤销。")
 
     async def test_other_group_and_unbound_departures_are_noops(self):
         self.bind()
@@ -148,7 +158,7 @@ class QQRevocationTests(unittest.IsolatedAsyncioTestCase):
         await self.events.handle_member_leave(self.bot, departure(group=OTHER_GROUP))
         self.send_group.assert_not_awaited()
         await self.events.handle_member_leave(self.bot, departure(user=MEMBER))
-        self.send_group.assert_awaited_once_with(group_id=GROUP, message="成员已退出群聊。")
+        self.assert_notice("成员已退出群聊。")
         self.assertEqual(self.binding(), "Steve")
         self.assertEqual(self.version(), version)
         self.notify.assert_not_called()
@@ -207,17 +217,82 @@ class QQRevocationTests(unittest.IsolatedAsyncioTestCase):
 
         self.send_group.side_effect = fail_after_commit
         await self.events.handle_member_leave(self.bot, departure())
+        committed_version = self.version()
         await self.events.handle_member_leave(self.bot, departure())
         self.assertIsNone(self.binding())
+        self.assertEqual(self.version(), committed_version)
         self.notify.assert_called_once_with()
         self.send_group.assert_awaited_once()
 
     async def test_join_in_other_group_sends_nothing(self):
-        await self.events.handle_member_join(self.bot, GroupIncreaseNoticeEvent(
-            time=DEPARTED_AT, self_id=BOT, post_type="notice", notice_type="group_increase",
-            sub_type="approve", group_id=OTHER_GROUP, user_id=ABSENT, operator_id=MEMBER,
-        ))
+        await self.events.handle_member_join(self.bot, arrival(group=OTHER_GROUP))
         self.send_group.assert_not_awaited()
+
+    async def test_join_switch_preserves_membership_tracking_and_custom_welcome_uses_structured_at(self):
+        generation = self.events.membership_generation
+        with self.configure("events: {join: {enabled: false}}"):
+            await self.events.handle_member_join(self.bot, arrival())
+        self.send_group.assert_not_awaited()
+        self.assertEqual(self.events.membership_generation, generation + 1)
+        with self.configure('events: {join: {message: "你好 {member}！[CQ:at,qq=all]"}}'):
+            await self.events.handle_member_join(self.bot, arrival())
+        self.send_group.assert_awaited_once()
+        message = self.send_group.call_args.kwargs["message"]
+        self.assertEqual([segment.type for segment in message], ["text", "at", "text"])
+        self.assertEqual(message[1].data["qq"], str(ABSENT))
+        self.assertEqual(message.extract_plain_text(), "你好 ！[CQ:at,qq=all]")
+        self.assertIsNone(self.binding())
+        self.notify.assert_not_called()
+
+    async def test_departure_switches_are_independent_and_never_skip_revocation(self):
+        for enabled in ("leave", "kick"):
+            disabled = "kick" if enabled == "leave" else "leave"
+            with self.subTest(enabled=enabled), self.configure(f"""
+events:
+  {enabled}: {{enabled: true, revoked: 已完成自定义撤权通知}}
+  {disabled}: {{enabled: false}}
+"""):
+                for kind in (enabled, disabled):
+                    self.bind()
+                    version = self.version()
+                    self.send_group.reset_mock()
+                    self.notify.reset_mock()
+                    await self.events.handle_member_leave(self.bot, departure(kind))
+                    self.assertIsNone(self.binding())
+                    self.assertGreater(self.version(), version)
+                    self.notify.assert_called_once_with()
+                    if kind == enabled:
+                        self.assert_notice("已完成自定义撤权通知")
+                    else:
+                        self.send_group.assert_not_awaited()
+            self.events.recent_departures.clear()
+
+    async def test_departure_chooses_no_binding_or_transaction_failure_template(self):
+        with self.configure("""
+events:
+  leave: {revoked: leave success, no_binding: leave empty, failed: leave failed}
+  kick: {revoked: kick success, no_binding: kick empty, failed: kick failed}
+"""):
+            for kind in ("leave", "kick"):
+                self.send_group.reset_mock()
+                await self.events.handle_member_leave(self.bot, departure(kind, user=MEMBER))
+                self.assert_notice(f"{kind} empty")
+                self.bind()
+                version = self.version()
+                self.notify.reset_mock()
+                self.send_group.reset_mock()
+                with patch.object(binding_service, "update_auth_version", side_effect=sqlite3.IntegrityError):
+                    await self.events.handle_member_leave(self.bot, departure(kind))
+                    await self.events.handle_member_leave(self.bot, departure(kind))
+                self.assert_notice(f"{kind} failed")
+                self.assertEqual(self.binding(), "Steve")
+                self.assertEqual(self.version(), version)
+                self.notify.assert_not_called()
+                self.send_group.reset_mock()
+                await self.events.handle_member_leave(self.bot, departure(kind))
+                self.assert_notice(f"{kind} success")
+                self.assertIsNone(self.binding())
+                self.notify.assert_called_once_with()
 
     async def test_failed_transaction_rolls_back_and_same_event_can_retry(self):
         self.bind()
@@ -411,7 +486,7 @@ class QQRevocationTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(self.status, "check_fastapi", return_value=runtime_status.HealthResult(503, 24)):
             ping = await self.command_reply("/ping")
             self.assertEqual(ping, await self.command_reply("/认证测试"))
-            self.assertIn("HTTP 503\nLatency: 24 ms", ping)
+            self.assertIn("HTTP 503\nLatency: 24 ms", ping.extract_plain_text())
         with patch.object(self.events, "reconcile_members", AsyncMock(return_value=0)) as reconcile:
             self.assertEqual(
                 await self.command_reply("/reconcile", user=MEMBER),
@@ -427,7 +502,72 @@ class QQRevocationTests(unittest.IsolatedAsyncioTestCase):
         for reason in ("Timeout", "Connection failed"):
             with patch.object(self.status, "check_fastapi", return_value=runtime_status.HealthResult(None, 12, reason)):
                 message = await self.command_reply("/ping")
-                self.assertIn(f"FastAPI Health: {reason}\nLatency: 12 ms", message)
+                self.assertIn(f"FastAPI Health: {reason}\nLatency: 12 ms", message.extract_plain_text())
+
+    async def test_custom_binding_replies_share_templates_and_interpolate_the_saved_name(self):
+        with self.configure("""
+commands:
+  bind:
+    usage: 请提供游戏名
+    success: "已绑定 {mc_name}"
+    invalid_name: 自定义格式错误
+    already_bound: "已有 {mc_name}"
+    name_taken: 自定义名称占用
+  binding: {success: "查询到 {mc_name}", not_bound: 自定义未绑定}
+  unbind: {success: "已解绑 {mc_name}", not_bound: 自定义无法解绑}
+"""):
+            for bind, query, unbind in (("/绑定", "/我的绑定", "/解绑"), ("/bind", "/binding", "/unbind")):
+                for text, expected in (
+                    (bind, "请提供游戏名"),
+                    (f"{bind} invalid-name", "自定义格式错误"),
+                    (f"{bind} Steve", "已绑定 Steve"),
+                    (f"{bind} Alex", "已有 Steve"),
+                    (query, "查询到 Steve"),
+                    (unbind, "已解绑 Steve"),
+                    (query, "自定义未绑定"),
+                    (unbind, "自定义无法解绑"),
+                ):
+                    with self.subTest(text=text):
+                        reply = await self.command_reply(text)
+                        self.assertEqual(reply.extract_plain_text(), expected)
+                self.bind(MEMBER, "Alex")
+                reply = await self.command_reply(f"{bind} alex")
+                self.assertEqual(reply.extract_plain_text(), "自定义名称占用")
+                await self.command_reply(unbind, user=MEMBER)
+
+    async def test_custom_help_ping_and_reconcile_replies(self):
+        with self.configure("""
+commands:
+  help: {message: "自定义帮助 [CQ:at,qq=all]"}
+  ping:
+    success: "HTTP {status_code} / {latency_ms} ms"
+    timeout: "超时 {latency_ms} ms"
+    connection_error: "连接失败 {latency_ms} ms"
+    error: "HTTP 异常 {latency_ms} ms"
+  reconcile: {success: "撤销 {count} 条", failed: 自定义对账失败, busy: 自定义对账忙}
+"""):
+            for command in ("/帮助", "/help"):
+                reply = await self.command_reply(command)
+                self.assertEqual([segment.type for segment in reply], ["text"])
+                self.assertEqual(reply.extract_plain_text(), "自定义帮助 [CQ:at,qq=all]")
+            for code, error, expected in (
+                (503, None, "HTTP 503 / 24 ms"),
+                (None, "Timeout", "超时 24 ms"),
+                (None, "Connection failed", "连接失败 24 ms"),
+                (None, "Invalid HTTP response", "HTTP 异常 24 ms"),
+            ):
+                result = runtime_status.HealthResult(code, 24.2, error)
+                with patch.object(self.status, "check_fastapi", return_value=result):
+                    for command in ("/认证测试", "/ping"):
+                        self.assertEqual((await self.command_reply(command)).extract_plain_text(), expected)
+            for count, expected in ((3, "撤销 3 条"), (None, "自定义对账失败")):
+                with patch.object(self.events, "reconcile_members", AsyncMock(return_value=count)):
+                    for command in ("/授权对账", "/reconcile"):
+                        reply = await self.command_reply(command, user=MEMBER)
+                        self.assertEqual(reply.extract_plain_text(), expected)
+            async with self.events.reconcile_lock:
+                reply = await self.command_reply("/reconcile", user=MEMBER)
+                self.assertEqual(reply.extract_plain_text(), "自定义对账忙")
 
     async def test_info_requires_superuser_and_sends_png_for_both_aliases(self):
         with patch.object(runtime_status, "check_fastapi", return_value=runtime_status.HealthResult(200, 15)):

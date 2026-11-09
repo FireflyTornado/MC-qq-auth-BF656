@@ -474,7 +474,7 @@ class ConfigTests(unittest.TestCase):
         (project / "plugins").mkdir(parents=True)
         for rel in (
             "app_config.py", "bot.py", "binding_service.py", "database.py", "mc_api.py",
-            "notify_client.py", "qq_group.py", "runtime_status.py", "status_image.py",
+            "notify_client.py", "qq_group.py", "runtime_status.py", "status_image.py", "message_config.py",
             "plugins/qq_bindings.py", "plugins/qq_events.py", "plugins/status_commands.py",
         ):
             shutil.copyfile(BOT_DIR / rel, project / rel)
@@ -487,6 +487,8 @@ class ConfigTests(unittest.TestCase):
         decoy = self.root / "elsewhere"
         decoy.mkdir()
         (decoy / ".env").write_text("TARGET_GROUP_ID=invalid\nDRIVER=invalid\n", encoding="utf-8")
+        (project / "messages.yml").write_text("commands: {help: {message: configured}}", encoding="utf-8")
+        (decoy / "messages.yml").write_text("commands: {help: {message: wrong directory}}", encoding="utf-8")
         code = """
 import os
 import sys
@@ -495,9 +497,13 @@ sys.path.insert(0, sys.argv[1])
 before = Path.cwd()
 import bot
 import mc_api
+import message_config
 import nonebot
 from nonebot.adapters.onebot.v11 import Adapter
 assert Path.cwd() == before
+assert message_config.MESSAGES.text("commands.help.message") == "configured"
+message_config.MESSAGE_FILE.unlink()
+assert message_config.MESSAGES.text("commands.help.message") == "configured"
 assert nonebot.get_driver().config.target_group_id == 98765
 assert mc_api.TARGET_GROUP_ID == "98765"
 adapter = nonebot.get_adapter(Adapter)

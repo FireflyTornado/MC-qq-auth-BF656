@@ -1,0 +1,116 @@
+# MC-QQ-Auth 默认文案。复制为同目录的 messages.yml 后修改，重启 Bot 生效。
+# 只填写要覆盖的字段也可以。文案最多 1000 字符。用 {{ 和 }} 显示字面花括号。
+# 文案以纯文本发送。下方注释列出了各字段可用的占位符。
+
+events:
+  join:
+    enabled: true
+    # {member} 会生成对新成员的 QQ @，可省略。
+    message: |-
+      {member} 欢迎加入！请用 /绑定 游戏ID 或 /bind 游戏ID 绑定 Minecraft 游戏 ID。
+      发送 /帮助 或 /help 查看指令。
+  leave:
+    # 关闭后仍会撤销离群成员的绑定。
+    enabled: true
+    revoked: "成员已退出群聊。Minecraft 授权已自动撤销。"
+    no_binding: "成员已退出群聊。"
+    failed: "成员已退出群聊。Minecraft 授权撤销暂未确认。"
+  kick:
+    # 关闭后仍会撤销被移出成员的绑定。
+    enabled: true
+    revoked: "成员已被移出群聊。Minecraft 授权已自动撤销。"
+    no_binding: "成员已被移出群聊。"
+    failed: "成员已被移出群聊。Minecraft 授权撤销暂未确认。"
+
+commands:
+  # 中英文别名共用同一套文案。
+  bind:
+    usage: "用法：/绑定 Minecraft玩家名"
+    # success 和 already_bound 支持 {mc_name}。
+    success: |-
+      绑定成功！
+      Minecraft ID：{mc_name}
+      你的绑定记录已保存。
+    invalid_name: |-
+      游戏 ID 格式不正确。
+      仅支持 3～16 位英文字母、数字和下划线。
+    already_bound: |-
+      你已经绑定了游戏 ID：{mc_name}
+      如需更换，请先使用 /解绑
+    name_taken: "该游戏 ID 已经被绑定，无法重复绑定。"
+    error: "绑定服务发生错误，请稍后重试"
+  unbind:
+    # success 支持 {mc_name}。
+    success: |-
+      解绑成功！
+      原 Minecraft ID：{mc_name}
+      绑定记录已删除。
+    not_bound: "你当前没有有效的绑定记录。"
+    error: "解绑失败，请稍后重试"
+  binding:
+    # success 支持 {mc_name}。
+    success: "当前绑定的 Minecraft ID：{mc_name}"
+    not_bound: |-
+      你还没有绑定 Minecraft 游戏 ID。
+      请使用 /绑定 玩家名
+    error: "查询失败，请稍后重试"
+  ping:
+    # 收到 HTTP 响应时使用 success，包括非 2xx。四种回复均支持 {latency_ms}。
+    # 仅 success 支持 {status_code}。
+    success: |-
+      [MC-QQ-Auth] Ping
+      FastAPI Health: HTTP {status_code}
+      Latency: {latency_ms} ms
+    timeout: |-
+      [MC-QQ-Auth] Ping
+      FastAPI Health: Timeout
+      Latency: {latency_ms} ms
+    connection_error: |-
+      [MC-QQ-Auth] Ping
+      FastAPI Health: Connection failed
+      Latency: {latency_ms} ms
+    error: |-
+      [MC-QQ-Auth] Ping
+      FastAPI Health: Invalid HTTP response
+      Latency: {latency_ms} ms
+  reconcile:
+    # success 支持 {count}。
+    success: "授权对账完成，已撤销 {count} 条离群绑定。"
+    failed: "授权对账未完成，请检查群成员名单和服务日志。"
+    busy: "授权对账正在执行，请稍后重试。"
+  help:
+    message: |-
+      [MC-QQ-Auth] 指令帮助
+      /绑定 游戏ID 或 /bind 游戏ID · 绑定 Minecraft 游戏 ID
+      /我的绑定 或 /binding · 查询自己的绑定
+      /解绑 或 /unbind · 撤销自己的绑定
+      /认证测试 或 /ping · 检查授权 API
+      /帮助 或 /help · 显示本帮助
+      超级用户专用
+      /信息 或 /info · 查看状态图片
+      /授权对账 或 /reconcile · 核对群成员与授权
+  info:
+    busy: "状态图正在生成，请稍后重试。"
+    error: "状态图暂不可用，请稍后重试。"
+
+info:
+  # 图片上按单行显示，超过可用宽度时截断。
+  title: "MC-QQ-Auth"
+  footer: "MC-QQ-Auth"
+  labels:
+    bot: "Bot"
+    onebot: "OneBot"
+    api: "FastAPI"
+    database: "SQLite"
+    system_uptime: "System"
+    bot_uptime: "Bot process"
+    connection_uptime: "OneBot connection"
+    os: "Operating system"
+    python: "Python"
+    cpu_cores: "Logical CPU cores"
+    memory: "Memory usage"
+    disk: "Disk usage"
+    auth_version: "Authorization version"
+    bindings: "Active bindings"
+    last_reconcile: "Last member reconciliation"
+    last_notice: "Last authorization notice"
