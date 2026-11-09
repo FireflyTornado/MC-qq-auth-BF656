@@ -138,6 +138,47 @@ test "$(curl -sS -o /dev/null -w '%{http_code}' \
   http://127.0.0.1:18765/internal/mc/snapshot)" = 401
 ```
 
+### 安全升级工具
+
+`deploy/update.sh` 用于 Ubuntu 24.04 上的人工升级。从生产工作目录执行，检查和升级分别选择一条命令。
+
+```sh
+cd /opt/mc-qq-auth
+sudo bash deploy/update.sh --check
+sudo bash deploy/update.sh --check --local
+sudo bash deploy/update.sh --apply REVIEWED_COMMIT_SHA
+```
+
+- 默认模式与 `--check` 相同。它获取 GitHub 的 `main`，更新 Git 对象和 `FETCH_HEAD`，验证远端历史未回退或分叉后才更新 `origin/main`。它检查工作区、目标变更、配置文件和服务状态。
+- `--check --local` 只使用缓存的 `origin/main`，不联网或更新 Git 引用，因此无法确认 GitHub 是否有新提交。两种检查模式都保持源码、虚拟环境、数据库和服务原样。
+- `--apply` 接受完整的 40 位 SHA 或至少 7 位且能唯一解析的十六进制前缀。执行前将 `REVIEWED_COMMIT_SHA` 替换为已审核的 SHA。目标必须在本次取得的 `origin/main` 历史中，并能从当前 `HEAD` 快进。管理员须先核对目标完整 SHA 与 CI 结果，再决定是否进入维护窗口。工具不会查询或替代这项审核。
+
+使用前确认已有 `main` 跟踪 `origin/main`，root 能访问预期 GitHub 仓库，现有 unit、回环端口、NapCat 容器名和运行目录符合本页约定。工具需要 Git、Bash、`flock`、systemd 工具、Docker CLI、`sqlite3`、curl 和 iproute2，以及已有的 `bot/.venv`。应先在隔离 Ubuntu 上演练。首次引入工具的提交用下方的手工流程安装。运行工具期间避免其他管理员并发修改 Git、运行目录或服务。`flock` 锁住仓库的 `.git` 目录，仅约束使用同一锁的升级工具进程。
+
+Apply 按以下顺序执行。
+
+1. 验证 Git 工作区和目标。存在未解决的 Git 操作、源码修改、非忽略的未跟踪文件或与目标冲突的忽略路径时停止。当前索引和目标都必须排除 `bot/.env`、`napcat/.env`、`bot/data/`、`napcat/data/`、`bot/.venv/`。
+2. 按差异制定操作。Bot 或 API 专属代码只重启受影响服务，依赖或共享 Python 代码变更涉及两项服务，纯文档和构建变更只更新源码。systemd unit、NapCat 运行配置或 `deploy/update.sh` 有改动时，转到下方的手工流程。
+3. 涉及服务时先核验现有 API、Bot 和 NapCat 的健康。依赖有变化时，先按目标锁文件从 PyPI 下载 wheel。下载失败时服务保持运行。
+4. 涉及服务时先做在线 SQLite 一致性备份，再停受影响服务。需要迁移时先停 Bot 再停 API，确认两者均为 `inactive`，并在停写后再做一份备份。停写期间管理员也要暂停其他数据库写入者。
+5. 用 `git merge --ff-only --no-autostash --no-overwrite-ignore` 合入已经审核的 SHA。涉及依赖时，停服期间从预下载的 wheel 离线安装并运行 `pip check`。涉及 SQLite 结构时调用项目的 `bot/migrate.py`，并检查活动库的 `quick_check` 和 `user_version`。
+6. 启动受影响服务，先确认 API 的进程 PID、`127.0.0.1:18765` 监听、健康 `200` 和未授权快照 `401`，再确认 Bot 的当前运行实例在 journald 中记录了 OneBot 连接，且其进程有到 `127.0.0.1:13001` 的已建立连接。NapCat 保持运行。日志级别需保留 OneBot 的连接记录。
+
+备份保存在仓库外的 `/opt/mc-qq-auth-backups/`。目录要求 root 所有、权限 `0700`，每份备份使用独立文件名，权限 `0600`。工具使用 SQLite `.backup`，只有非空、`quick_check` 返回 `ok` 且 `user_version` 与源一致的文件才会被报告为有效备份。中断留下的文件需重新核验后才能用于恢复。
+
+#### 失败后的人工恢复
+
+| 报告阶段 | 已完成的操作与下一步 |
+| --- | --- |
+| `preflight`、`wheel-download`、`backup` | 源码和服务保持原状。核对 Git 或运行配置，修复下载或备份错误后再试。 |
+| `stop`、`offline-backup` | 可能已有服务停止，源码仍为原版本。核对 unit 状态与库状态，确认安全后可手工启动原服务。 |
+| `git-update` | 相关服务已停止。检查 `git rev-parse HEAD` 和 `git status --short`，确认当前版本及本地文件，再决定后续。 |
+| `dependencies` | 源码已更新，虚拟环境可能只安装了一部分。用经审核的锁文件完成安装并通过 `pip check`，或准备与旧版本配套的环境。 |
+| `migration` | 源码已更新，数据库可能需要确认迁移结果。保持停写，核对活动库和最近一份有效备份的结构版本与完整性。 |
+| `restart`、`health` | 工具会尝试停止本次尝试启动的服务。核对实际状态、有效 unit、端口和本机日志，再决定何时启动。 |
+
+工具不会回退 Git 或恢复数据库。回到旧源码前应确认它能读取当前数据库结构。迁移可能没有逆向步骤，恢复旧备份可能丢失随后产生的绑定。需要恢复时先停写，保全当前库及最后一份有效备份，再由管理员选择恢复点。重复 Apply 同一个已落盘的 SHA 会停止，需按实际失败阶段恢复。
+
 ### 手工升级流程
 
 1. 在 `/opt/mc-qq-auth` 执行 `git fetch origin`。在同一个 Bash 会话中用 `previous_commit=$(git rev-parse HEAD)` 和 `target_commit=$(git rev-parse --verify 'origin/main^{commit}')` 记录两个完整 SHA。核对目标提交的变更和 GitHub CI 结果。
