@@ -38,7 +38,7 @@ cp -n bot/.env.example bot/.env
 
 `/认证测试` 和 `/ping` 访问本机 `127.0.0.1:18765/internal/health`，返回状态码与耗时。超级用户触发 `/info` 后，状态图左列显示 Bot 的完整 QQ 号、昵称、头像、采集时间、有效绑定数和系统资源，右列显示服务链路。采集时间使用 Bot 服务器的当地时间并标注 UTC 偏移。磁盘优先统计 `/opt`，缺失时统计根目录。
 
-可在 `bot/.env` 设置 `MC_STATUS_ADDRESS=play.example.org:25565`，使用 Minecraft Java 服务器列表探测游戏服，并显示服务器返回的在线人数。留空时显示「未探测」。服务状态图上的 WSS 来自本机 API 的授权连接数，可独立显示授权通道是否连接。
+可在 `bot/.env` 设置 `MC_STATUS_ADDRESS=play.example.org:25565`，使用 Minecraft Java 服务器列表探测游戏服，并显示服务器返回的在线人数。地址留空时显示灰色「未探测」，配置读取失败时显示黄色「配置读取失败」。服务状态图上的 WSS 来自本机 API 的授权连接数，可独立显示授权通道是否连接。
 
 昵称来自 OneBot 的当前登录信息。Bot 通过 HTTPS 从 `q1.qlogo.cn` 按自身 QQ 号获取头像，成功缓存 30 分钟，失败缓存 1 分钟。下载不可用时使用内置机器人图标。SQLite 状态和有效绑定数来自同一次只读授权查询。FastAPI 返回 HTTP 200 时亮绿灯，非 200 响应和超时亮黄灯，连接失败亮红灯。
 

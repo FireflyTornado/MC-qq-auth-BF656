@@ -98,7 +98,7 @@
       <rect id="minecraft-node" x="432" y="505" width="126" height="52" rx="9" fill="#20323e"
             stroke="$minecraft_color" stroke-dasharray="$minecraft_dash"/>
       <text x="495" y="$minecraft_title_y" font-size="16" font-weight="700">Minecraft</text>
-      <text id="minecraft-players" x="495" y="548" font-size="13" fill="#a8bbcb">$minecraft_players</text>
+      <text id="minecraft-detail" x="495" y="548" font-size="13" fill="#a8bbcb">$minecraft_detail</text>
     </g>
   </g>
 </svg>

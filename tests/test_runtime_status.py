@@ -20,6 +20,7 @@ import message_config
 import notify_client
 import runtime_status
 import status_image
+from app_config import ConfigError
 from status_image import HEIGHT, WIDTH, render_status
 
 
@@ -165,6 +166,31 @@ class RuntimeStatusTests(unittest.TestCase):
             probe.side_effect = TimeoutError("private address")
             self.assertEqual(runtime_status.check_minecraft(), runtime_status.MinecraftStatus(False))
 
+    def test_minecraft_config_failure_and_blank_address_have_distinct_statuses(self):
+        private_detail = "private config path and values"
+        with (
+            patch.object(runtime_status, "load_config", return_value={"MC_STATUS_ADDRESS": "  "}) as config,
+            patch.object(runtime_status, "check_fastapi", return_value=None),
+            patch.object(runtime_status.JavaServer, "lookup") as lookup,
+        ):
+            blank = runtime_status.collect_status("1", connected=True, connected_for=None)
+            config.side_effect = ConfigError(private_detail)
+            unreadable = runtime_status.collect_status("1", connected=True, connected_for=None)
+            lookup.assert_not_called()
+
+        self.assertIsNone(blank.minecraft)
+        self.assertEqual(unreadable.minecraft, runtime_status.MinecraftStatus(None))
+        self.assertNotIn(private_detail, repr(unreadable))
+        cjk = status_image._font_source(False) is not None
+        for status, color, detail in (
+            (blank, status_image.GRAY, "未探测" if cjk else "Not probed"),
+            (unreadable, status_image.YELLOW, "配置读取失败" if cjk else "Config error"),
+        ):
+            with self.subTest(detail=detail):
+                nodes = self.rendered_svg(status)
+                self.assertEqual(nodes["minecraft-node"].get("stroke"), color)
+                self.assertEqual(nodes["minecraft-detail"].text, detail)
+
     def test_custom_title_label_and_long_nickname_fit_and_account_shows_local_time(self):
         path = self.path.with_name("messages.yml")
         long_text = ("很长的状态名称" if status_image._font_source(False) else "Long title ") * 80
@@ -250,7 +276,7 @@ class RuntimeStatusTests(unittest.TestCase):
         self.assertIn(nodes["system-uptime"], nodes["resources"])
         self.assertIn("3天 6小时" if cjk else "3d 6h", nodes["system-uptime"].text)
         self.assertEqual(nodes["api-status"].text, "12 ms")
-        self.assertEqual(nodes["minecraft-players"].text, "8/30")
+        self.assertEqual(nodes["minecraft-detail"].text, "8/30")
         self.assertEqual(nodes["sqlite-name"].text, "SQLite")
         self.assertEqual(nodes["wss-link"].get("stroke"), status_image.RED)
         self.assertEqual(nodes["wss-link"][0].get("stroke-dasharray"), "5 4")
@@ -273,6 +299,7 @@ class RuntimeStatusTests(unittest.TestCase):
         warning.assert_called_once()
         self.assertEqual(nodes["nickname"].text, "QQ Bot")
         self.assertEqual(nodes["resources-label"].text, "System resources")
+        self.assertEqual(nodes["minecraft-detail"].text, "Not probed")
 
     def test_health_sanitizes_timeout_and_connection_errors(self):
         for exc, reason in ((TimeoutError, "Timeout"), (ConnectionRefusedError, "Connection failed")):

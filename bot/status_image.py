@@ -169,9 +169,15 @@ def render_status(
     ws_connected = None if api is None or api.minecraft_connections is None else api.minecraft_connections > 0
 
     game = status.minecraft
-    players = ""
-    if game is not None and game.reachable and game.online_players is not None and game.max_players is not None:
-        players = f"{game.online_players}/{game.max_players}"
+    game_color = _binary_color(game.reachable if game is not None else None)
+    game_detail = ""
+    if game is None:
+        game_detail = "未探测" if cjk else "Not probed"
+    elif game.reachable is None:
+        game_color = YELLOW
+        game_detail = "配置读取失败" if cjk else "Config error"
+    elif game.reachable and game.online_players is not None and game.max_players is not None:
+        game_detail = f"{game.online_players}/{game.max_players}"
 
     system_duration = _duration(status.system_seconds, cjk)
     system_uptime = f"{label('system_uptime')}运行 · {system_duration}"
@@ -211,8 +217,8 @@ def render_status(
         "bot_uptime": text(_duration(status.bot_seconds, cjk), 13, 110),
         "api_name": text(label("api"), 16, 110, "FastAPI", strong=True),
         "api_status": text(api_status, 14, 164),
-        "minecraft_title_y": 528 if players else 537,
-        "minecraft_players": text(players, 13, 110),
+        "minecraft_title_y": 528 if game_detail else 537,
+        "minecraft_detail": text(game_detail, 13, 110),
         "sqlite_name": text(label("database"), 13, 79, "SQLite"),
         "resources_label": "系统资源" if cjk else "System resources",
         "system": text(f"{system} · {label('python')} {python}", 15, METER_WIDTH, f"{status.system_name or EMPTY} · Python {python}"),
@@ -229,7 +235,7 @@ def render_status(
         ("api", _api_color(api)),
         ("wss", _binary_color(ws_connected)),
         ("sqlite", _binary_color(status.sqlite_readable)),
-        ("minecraft", _binary_color(game.reachable if game is not None else None)),
+        ("minecraft", game_color),
     ):
         fields[f"{key}_color"], fields[f"{key}_dash"] = color, STROKE_DASHES[color]
     for key, percent in (

@@ -15,7 +15,7 @@ import psutil
 from mcstatus import JavaServer
 
 import database
-from app_config import load_config
+from app_config import ConfigError, load_config
 
 
 UNAVAILABLE = "Unavailable"
@@ -88,7 +88,8 @@ class ResourceUsage:
 
 @dataclass(frozen=True)
 class MinecraftStatus:
-    reachable: bool
+    # None represents a configuration read failure before probing.
+    reachable: bool | None
     online_players: int | None = None
     max_players: int | None = None
 
@@ -124,7 +125,11 @@ def _probe(check: Callable[[], T]) -> T | None:
 
 
 def check_minecraft() -> MinecraftStatus | None:
-    address = (load_config().get("MC_STATUS_ADDRESS") or "").strip()
+    try:
+        config = load_config()
+    except ConfigError:
+        return MinecraftStatus(None)
+    address = (config.get("MC_STATUS_ADDRESS") or "").strip()
     if not address:
         return None
     reply = _probe(lambda: JavaServer.lookup(address, timeout=MINECRAFT_TIMEOUT).status(tries=1))
