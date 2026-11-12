@@ -1,0 +1,100 @@
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink"
+     width="880" height="512" viewBox="0 0 880 512" font-family="$font_family" fill="#edf5f6">
+  <defs>
+    <clipPath id="avatar-clip"><circle cx="76" cy="120" r="27"/></clipPath>
+    <linearGradient id="binding-fill" x2="1" y2="1">
+      <stop stop-color="#183c3a"/>
+      <stop offset="1" stop-color="#1a2935"/>
+    </linearGradient>
+  </defs>
+  <rect width="880" height="512" fill="#101923"/>
+  <rect x="24" y="22" width="38" height="38" rx="10" fill="#203a3b" stroke="#35514f"/>
+  <path d="M43 28l11 6v13l-11 6-11-6V34z M32 34l11 6 11-6 M43 40v13"
+        fill="none" stroke="#7ae7c2" stroke-width="1.4" stroke-linejoin="round"/>
+  <text id="title" x="74" y="50" font-size="29" font-weight="700">$title</text>
+  <text x="856" y="47" text-anchor="end" font-size="16" fill="#a8bbcb">$page_label</text>
+
+  <g id="account">
+    <rect x="24" y="74" width="528" height="92" rx="16" fill="#192632" stroke="#2b3d4b"/>
+    <circle cx="76" cy="120" r="28" fill="#264247" stroke="#3e605f"/>
+    <path d="M76 103v6 M69 128h14" stroke="#7ae7c2" stroke-width="1.5" stroke-linecap="round"/>
+    <rect x="61" y="110" width="30" height="21" rx="5" fill="#173239" stroke="#7ae7c2"/>
+    <circle cx="71" cy="119" r="2" fill="#7ae7c2"/><circle cx="81" cy="119" r="2" fill="#7ae7c2"/>
+    <image id="avatar" x="49" y="93" width="54" height="54" clip-path="url(#avatar-clip)"
+           display="$avatar_display" xlink:href="$avatar"/>
+    <circle cx="96" cy="140" r="6" fill="$account_color" stroke="#192632" stroke-width="2"/>
+    <text id="nickname" x="121" y="117" font-size="23" font-weight="700">$nickname</text>
+    <text id="qq-id" x="121" y="143" font-size="16" fill="#a8bbcb">$qq</text>
+  </g>
+  <g id="bindings">
+    <rect x="566" y="74" width="290" height="92" rx="16" fill="url(#binding-fill)" stroke="#35514f"/>
+    <text id="bindings-label" x="588" y="126" font-size="16" fill="#d1e8e5">$bindings_label</text>
+    <text id="bindings-count" x="834" y="138" text-anchor="end" font-size="$bindings_size" font-weight="700" fill="#7ae7c2">$bindings_count</text>
+  </g>
+
+  <g id="services">
+    <rect x="24" y="180" width="832" height="171" rx="16" fill="#192632" stroke="#2b3d4b"/>
+    <text x="44" y="209" font-size="20" font-weight="700">$services_label</text>
+    <text id="system-uptime" x="836" y="208" text-anchor="end" font-size="15" fill="#a8bbcb">$system_uptime</text>
+    <g id="onebot-link" stroke="$onebot_color">
+      <path d="M158 263H262" stroke-width="2" stroke-dasharray="$onebot_dash"/>
+      <text id="onebot-name" x="210" y="249" text-anchor="middle" font-size="14" stroke="none" fill="#edf5f6">$onebot_name</text>
+      <text id="onebot-uptime" x="210" y="285" text-anchor="middle" font-size="13" stroke="none" fill="#a8bbcb">$onebot_uptime</text>
+    </g>
+    <g id="api-link" stroke="$api_color">
+      <path d="M374 263H463" stroke-width="2" stroke-dasharray="$api_dash"/>
+      <text id="api-status" x="418" y="249" text-anchor="middle" font-size="13" stroke="none" fill="$api_color">$api_status</text>
+    </g>
+    <g id="wss-link" stroke="$wss_color">
+      <path d="M597 263H718" stroke-width="2" stroke-dasharray="$wss_dash"/>
+      <text x="658" y="249" text-anchor="middle" font-size="14" stroke="none" fill="#edf5f6">WSS</text>
+    </g>
+    <g id="sqlite-link" stroke="$sqlite_color">
+      <path d="M530 291V309" stroke-width="2" stroke-dasharray="$sqlite_dash"/>
+      <rect x="454" y="309" width="152" height="26" rx="6" fill="#182833"/>
+      <text id="sqlite-name" x="530" y="327" text-anchor="middle" font-size="13" stroke="none">$sqlite_name</text>
+    </g>
+    <g text-anchor="middle">
+      <rect x="46" y="235" width="112" height="56" rx="9" fill="#20323e" stroke="#3a505d"/>
+      <text x="102" y="269" font-size="16" font-weight="700">NapCat</text>
+      <rect x="262" y="235" width="112" height="56" rx="9" fill="#20323e" stroke="#3a505d"/>
+      <text id="bot-name" x="318" y="257" font-size="16" font-weight="700">$bot_name</text>
+      <text id="bot-uptime" x="318" y="278" font-size="13" fill="#a8bbcb">$bot_uptime</text>
+      <rect x="463" y="235" width="134" height="56" rx="9" fill="#20323e" stroke="#3a505d"/>
+      <text id="api-name" x="530" y="269" font-size="16" font-weight="700">$api_name</text>
+      <rect id="minecraft-node" x="718" y="235" width="116" height="56" rx="9" fill="#20323e"
+            stroke="$minecraft_color" stroke-dasharray="$minecraft_dash"/>
+      <text x="776" y="$minecraft_title_y" font-size="16" font-weight="700">Minecraft</text>
+      <text id="minecraft-players" x="776" y="278" font-size="13" fill="#a8bbcb">$minecraft_players</text>
+    </g>
+  </g>
+
+  <g id="resources">
+    <rect x="24" y="365" width="832" height="109" rx="16" fill="#192632" stroke="#2b3d4b"/>
+    <text id="resources-label" x="44" y="392" font-size="19" font-weight="700">$resources_label</text>
+    <text id="system" x="836" y="391" text-anchor="end" font-size="15" fill="#a8bbcb">$system</text>
+    <path d="M303 405v53 M577 405v53" stroke="#2b3d4b"/>
+    <g id="cpu">
+      <text x="44" y="423" font-size="16" font-weight="700">CPU</text>
+      <text id="cpu-value" x="288" y="423" text-anchor="end" font-size="17" font-weight="700">$cpu_value</text>
+      <text id="cpu-detail" x="44" y="444" font-size="14" fill="#a8bbcb">$cpu_detail</text>
+      <rect x="44" y="453" width="244" height="5" rx="2.5" fill="#2c4250"/>
+      <rect x="44" y="453" width="$cpu_bar" height="5" rx="2.5" fill="$cpu_color"/>
+    </g>
+    <g id="memory">
+      <text x="318" y="423" font-size="16" font-weight="700">$memory_label</text>
+      <text id="memory-value" x="562" y="423" text-anchor="end" font-size="17" font-weight="700">$memory_value</text>
+      <text id="memory-detail" x="318" y="444" font-size="14" fill="#a8bbcb">$memory_detail</text>
+      <rect x="318" y="453" width="244" height="5" rx="2.5" fill="#2c4250"/>
+      <rect x="318" y="453" width="$memory_bar" height="5" rx="2.5" fill="$memory_color"/>
+    </g>
+    <g id="disk">
+      <text x="592" y="423" font-size="16" font-weight="700">$disk_label</text>
+      <text id="disk-value" x="836" y="423" text-anchor="end" font-size="17" font-weight="700">$disk_value</text>
+      <text id="disk-detail" x="592" y="444" font-size="14" fill="#a8bbcb">$disk_detail</text>
+      <rect x="592" y="453" width="244" height="5" rx="2.5" fill="#2c4250"/>
+      <rect x="592" y="453" width="$disk_bar" height="5" rx="2.5" fill="$disk_color"/>
+    </g>
+  </g>
+  <text id="timestamp" x="856" y="498" text-anchor="end" font-size="15" fill="#a8bbcb">$timestamp</text>
+</svg>

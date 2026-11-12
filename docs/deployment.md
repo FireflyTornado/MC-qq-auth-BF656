@@ -82,7 +82,7 @@ info:
 
 每条文案最多 1000 字符，配置文件最多 64 KiB。缺失字段、空文案、类型错误、非法占位符和过长文案使用该字段的内置默认值。请用布尔值 `true` 或 `false` 设置通知开关。无法解析或读取文件时使用全部内置默认值，群通知因此默认关闭，日志只记录错误类别和已知字段。状态图使用 `info.title` 和仍在显示的 `info.labels.*`，超宽时截断并加省略号。`info.footer` 和隐藏字段的旧标签仍可解析，便于保留已有配置。
 
-Ubuntu 可用 `sudo apt install fonts-noto-cjk` 为状态图启用中文。字体缺失时，Bot 记录一次提示并使用内置字体和英文备用标签。
+状态图由 `bot/status_card.svg` 模板和 Python 依赖 `resvg-py` 生成 PNG。Ubuntu 可用 `sudo apt install fonts-noto-cjk` 为状态图启用中文。缺少中文字体时，Bot 记录一次提示并使用英文备用标签。
 
 日常编辑 `messages.yml` 后，只需重启 Bot。
 

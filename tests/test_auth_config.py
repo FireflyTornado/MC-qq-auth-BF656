@@ -479,7 +479,8 @@ class ConfigTests(unittest.TestCase):
         (project / "plugins").mkdir(parents=True)
         for rel in (
             "app_config.py", "bot.py", "binding_service.py", "database.py", "mc_api.py",
-            "notify_client.py", "qq_avatar.py", "qq_group.py", "runtime_status.py", "status_image.py", "message_config.py",
+            "notify_client.py", "qq_avatar.py", "qq_group.py", "runtime_status.py", "status_image.py",
+            "status_card.svg", "message_config.py",
             "plugins/qq_bindings.py", "plugins/qq_events.py", "plugins/status_commands.py",
         ):
             shutil.copyfile(BOT_DIR / rel, project / rel)

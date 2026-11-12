@@ -1,125 +1,79 @@
+import re
+from base64 import b64encode
 from bisect import bisect_right
 from functools import lru_cache
+from html import escape
 from io import BytesIO
-from math import cos, radians, sin
+from pathlib import Path
+from string import Template
 
 from nonebot import logger
-from PIL import Image, ImageDraw, ImageFont, ImageOps
+from PIL import Image, ImageFont, ImageOps
+from resvg_py import svg_to_bytes
 
 import message_config
 from runtime_status import HealthResult, ResourceUsage, RuntimeStatus
 
 
-WIDTH, HEIGHT = 880, 503
-SCALE = 2
-BG, CARD, BORDER = "#101923", "#192632", "#2b3d4b"
-TEXT, MUTED, MINT = "#f0f6f8", "#a8bbcb", "#7ae7c2"
-YELLOW, RED, GRAY = "#f5ce79", "#ff8c91", "#8a9aa8"
-TRACK = "#2c4250"
+WIDTH, HEIGHT = 880, 512
+MINT, YELLOW, RED, GRAY = "#7ae7c2", "#f5ce79", "#ff8c91", "#8a9aa8"
+STROKE_DASHES = {MINT: "none", YELLOW: "8 3", RED: "5 4", GRAY: "2 4"}
 EMPTY = "—"
+_INVALID_XML = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\ud800-\udfff\ufffe\uffff]")
+
+
+@lru_cache(maxsize=1)
+def _template() -> Template:
+    return Template(Path(__file__).with_name("status_card.svg").read_text(encoding="utf-8"))
+
+
+def _find_font(candidates: tuple[tuple[str, int], ...]) -> tuple[str, int] | None:
+    for filename, index in candidates:
+        try:
+            font = ImageFont.truetype(filename, 20, index=index)
+        except OSError:
+            continue
+        return str(font.path), index
+    return None
 
 
 @lru_cache(maxsize=2)
 def _font_source(bold: bool) -> tuple[str, int] | None:
     weight = "Bold" if bold else "Regular"
-    for source in (
+    source = _find_font((
         (f"/usr/share/fonts/opentype/noto/NotoSansCJK-{weight}.ttc", 2),
         ("msyhbd.ttc" if bold else "msyh.ttc", 0),
-    ):
-        try:
-            ImageFont.truetype(source[0], 20, index=source[1])
-        except OSError:
-            continue
-        return source
-    if bold:
-        return _font_source(False)
-    logger.warning("[MC-QQ-AUTH] 未找到中文字体，状态图使用英文备用标签")
-    return None
+    ))
+    if source is None:
+        if bold:
+            return _font_source(False)
+        logger.warning("[MC-QQ-AUTH] 未找到中文字体，状态图使用英文备用标签")
+    return source
 
 
-@lru_cache(maxsize=40)
+@lru_cache(maxsize=2)
+def _latin_source(bold: bool) -> tuple[str, int] | None:
+    return _find_font((
+        ("arialbd.ttf" if bold else "arial.ttf", 0),
+        ("DejaVuSans-Bold.ttf" if bold else "DejaVuSans.ttf", 0),
+        ("LiberationSans-Bold.ttf" if bold else "LiberationSans-Regular.ttf", 0),
+    ))
+
+
+@lru_cache(maxsize=48)
 def _font(source: tuple[str, int] | None, size: int) -> ImageFont.FreeTypeFont:
     if source is None:
-        return ImageFont.load_default(size=size * SCALE)
-    return ImageFont.truetype(source[0], size * SCALE, index=source[1])
+        return ImageFont.load_default(size=size)
+    return ImageFont.truetype(source[0], size, index=source[1])
 
 
-class _Canvas:
-    def __init__(self) -> None:
-        self.image = Image.new("RGB", (WIDTH * SCALE, HEIGHT * SCALE), BG)
-        self.draw = ImageDraw.Draw(self.image)
-        self.messages = message_config.MESSAGES
-        self.cjk = _font_source(False) is not None
+def _fit(value: str, font: ImageFont.FreeTypeFont, width: int) -> str:
+    value = " ".join(_INVALID_XML.sub("", value).split())
+    if font.getlength(value) <= width:
+        return value
 
-    def text(self, x, y, value, size, color=TEXT, *, bold=False, anchor="lm", width=None, fallback=None):
-        if not self.cjk and fallback is not None and not value.isascii():
-            value = fallback
-        value = " ".join(value.split())
-        font = _font(_font_source(bold), size)
-        if width is not None and self.draw.textbbox((0, 0), value, font=font)[2] > width * SCALE:
-            def prefix_width(length):
-                return self.draw.textbbox((0, 0), value[:length] + "…", font=font)[2]
-
-            length = bisect_right(range(len(value)), width * SCALE, key=prefix_width) - 1
-            value = value[:max(0, length)] + "…"
-        self.draw.text((x * SCALE, y * SCALE), value, fill=color, font=font, anchor=anchor)
-
-    def label(self, key: str) -> str:
-        return self.messages.info_text(f"info.labels.{key}")
-
-    def box(self, x1, y1, x2, y2, radius=17, fill=CARD, outline=BORDER):
-        self.draw.rounded_rectangle(
-            (x1 * SCALE, y1 * SCALE, x2 * SCALE, y2 * SCALE), radius * SCALE,
-            fill=fill, outline=outline, width=SCALE,
-        )
-
-    def dot(self, x, y, radius, color):
-        self.draw.ellipse(
-            ((x - radius) * SCALE, (y - radius) * SCALE, (x + radius) * SCALE, (y + radius) * SCALE),
-            fill=color,
-        )
-
-    def line(self, x1, y1, x2, y2, color=BORDER, width=1):
-        self.draw.line((x1 * SCALE, y1 * SCALE, x2 * SCALE, y2 * SCALE), fill=color, width=width * SCALE)
-
-    def light(self, x, y, state):
-        self.dot(x, y, 5.5, state)
-        if state == YELLOW:
-            self.line(x, y - 2, x, y, BG)
-            self.dot(x, y + 2, 0.65, BG)
-        elif state == RED:
-            self.line(x - 2, y - 2, x + 2, y + 2, BG)
-            self.line(x + 2, y - 2, x - 2, y + 2, BG)
-        elif state == GRAY:
-            self.line(x - 2, y, x + 2, y, BG)
-
-    def ring(self, x, y, percent):
-        radius = 39
-        bounds = ((x - radius) * SCALE, (y - radius) * SCALE, (x + radius) * SCALE, (y + radius) * SCALE)
-        self.draw.ellipse(bounds, outline=TRACK, width=7 * SCALE)
-        if percent is not None and percent > 0:
-            end = percent * 3.6 - 90
-            color = _resource_color(percent)
-            self.draw.arc(bounds, -90, end, fill=color, width=7 * SCALE)
-            mid = radius - 3.5
-            self.dot(x, y - mid, 3.5, color)
-            self.dot(x + mid * cos(radians(end)), y + mid * sin(radians(end)), 3.5, color)
-        self.text(x, y, _percent(percent), 24, bold=True, anchor="mm")
-
-
-def _resource_color(percent: float) -> str:
-    return RED if percent >= 95 else YELLOW if percent >= 85 else MINT
-
-
-def _percent(percent: float | None) -> str:
-    return f"{percent:.0f}%" if percent is not None else EMPTY
-
-
-def _usage(usage: ResourceUsage | None) -> str:
-    if usage is None:
-        return EMPTY
-    gib = 1024 ** 3
-    return f"{usage.used / gib:.1f} / {usage.total / gib:.1f} GiB"
+    length = bisect_right(range(len(value)), width, key=lambda n: font.getlength(value[:n] + "…")) - 1
+    return value[:max(0, length)] + "…"
 
 
 def _duration(seconds: float | None, cjk: bool) -> str:
@@ -134,11 +88,11 @@ def _duration(seconds: float | None, cjk: bool) -> str:
     return f"{minutes}分" if cjk else f"{minutes}m"
 
 
-def _binary_state(value: bool | None) -> str:
+def _binary_color(value: bool | None) -> str:
     return GRAY if value is None else MINT if value else RED
 
 
-def _api_state(health: HealthResult | None) -> str:
+def _api_color(health: HealthResult | None) -> str:
     if health is None:
         return GRAY
     if health.status_code == 200:
@@ -148,164 +102,138 @@ def _api_state(health: HealthResult | None) -> str:
     return YELLOW if health.status_code is not None or health.error else GRAY
 
 
-def _header(c: _Canvas) -> None:
-    c.box(24, 20, 62, 58, 10, "#203a3b", "#2a4948")
-    for points in (
-        (33, 33, 43, 28), (43, 28, 53, 33), (53, 33, 53, 44),
-        (53, 44, 43, 50), (43, 50, 33, 44), (33, 44, 33, 33),
-        (33, 33, 43, 39), (43, 39, 53, 33), (43, 39, 43, 50),
-    ):
-        c.line(*points, color=MINT)
-    c.text(74, 39, c.messages.info_text("info.title"), 30, bold=True, width=640, fallback="MC-QQ-Auth")
-    c.text(855, 39, "运行状态", 20, MUTED, anchor="rm", fallback="Runtime status")
+def _meter(percent: float | None) -> tuple[str, float, str]:
+    if percent is None:
+        return EMPTY, 0, GRAY
+    color = RED if percent >= 95 else YELLOW if percent >= 85 else MINT
+    return f"{percent:.0f}%", round(244 * percent / 100, 2), color
 
 
-def _account(
-    c: _Canvas, status: RuntimeStatus, qq_id: str, nickname: str | None, avatar: Image.Image | None,
-) -> None:
-    c.box(24, 76, 370, 186)
-    c.dot(79, 131, 36, "#395563")
+def _usage(usage: ResourceUsage | None) -> str:
+    if usage is None:
+        return EMPTY
+    gib = 1024 ** 3
+    return f"{usage.used / gib:.1f} / {usage.total / gib:.1f} GiB"
+
+
+def _avatar_uri(avatar: Image.Image | None) -> str:
     if avatar is None:
-        c.dot(79, 131, 34, "#27444a")
-        c.line(79, 113, 79, 120, MINT, 2)
-        c.dot(79, 112, 3, MINT)
-        c.box(59, 120, 99, 148, 8, "#173239", "#62bca9")
-        c.dot(71, 132, 2.7, MINT)
-        c.dot(87, 132, 2.7, MINT)
-        c.line(75, 140, 83, 140, "#90cabe")
-    else:
-        size = 68 * SCALE
-        photo = ImageOps.fit(avatar, (size, size), method=Image.Resampling.LANCZOS)
-        mask = Image.new("L", (size, size))
-        ImageDraw.Draw(mask).ellipse((0, 0, size - 1, size - 1), fill=255)
-        c.image.paste(photo, (45 * SCALE, 97 * SCALE), mask)
-    c.dot(105, 157, 10, CARD)
-    c.light(105, 157, _binary_state(status.connected))
-    c.text(131, 119, nickname or "QQ 机器人", 25, bold=True, width=218, fallback="QQ Bot")
-    c.text(131, 151, f"QQ  {qq_id or EMPTY}", 19 if len(qq_id) <= 15 else 14, MUTED, width=218)
-
-
-def _services(c: _Canvas, status: RuntimeStatus) -> None:
-    c.box(382, 76, 856, 186)
-    c.text(402, 96, "服务状态", 20, bold=True, fallback="Services")
-    system_duration = _duration(status.system_seconds, c.cjk)
-    c.text(836, 96, f"{c.label('system_uptime')}运行 · {system_duration}", 15, MUTED,
-           anchor="rm", width=265, fallback=f"Host uptime · {system_duration}")
-
-    api = status.api
-    ws_connected = None if api is None or api.minecraft_connections is None else api.minecraft_connections > 0
-    minecraft = status.minecraft
-    reachable = minecraft.reachable if minecraft is not None else None
-
-    connected_label, disconnected_label = ("已连接", "未连接") if c.cjk else ("Linked", "Unlinked")
-    unknown_label = "未知" if c.cjk else "Unknown"
-    onebot_detail = unknown_label
-    if status.connected is True:
-        onebot_detail = connected_label if status.connection_seconds is None else _duration(status.connection_seconds, c.cjk)
-    elif status.connected is False:
-        onebot_detail = disconnected_label
-    ws_detail = unknown_label if ws_connected is None else connected_label if ws_connected else disconnected_label
-
-    api_detail = api.summary if api is not None else unknown_label
-    if api is not None and api.status_code is not None:
-        api_detail = f"{api.summary} · {api.latency_ms:.0f}ms"
-
-    if reachable:
-        game_detail = "可达" if c.cjk else "Reachable"
-        if minecraft.online_players is not None and minecraft.max_players is not None:
-            players = f"{minecraft.online_players}/{minecraft.max_players}"
-            game_detail = f"{game_detail} · {players}" if c.cjk else f"{players} online"
-    elif reachable is False:
-        game_detail = "无响应" if c.cjk else "No response"
-    else:
-        game_detail = "未探测" if c.cjk else "Not probed"
-
-    c.line(423, 139, 807, 139, TRACK, 2)
-    c.line(423, 139, 557, 139, _binary_state(status.connected), 2)
-    c.line(648, 139, 807, 139, _binary_state(ws_connected), 2)
-    c.line(595, 139, 595, 173, TRACK, 2)
-    c.dot(423, 139, 4, MUTED)
-    c.text(423, 121, "NapCat", 14, bold=True, anchor="mm")
-    onebot_key = "connection_uptime"
-    if c.label(onebot_key) == message_config.DEFAULTS["info.labels.connection_uptime"]:
-        onebot_key = "onebot"
-    for x, name, detail, state, title_width, detail_width, fallback in (
-        (486, c.label(onebot_key), onebot_detail, _binary_state(status.connected), 62, 66, "OneBot"),
-        (557, c.label("bot_uptime"), _duration(status.bot_seconds, c.cjk),
-         MINT if status.bot_seconds is not None else GRAY, 66, 66, "Bot"),
-        (648, c.label("api"), api_detail, _api_state(api), 99, 103, "FastAPI"),
-        (731, "WSS", ws_detail, _binary_state(ws_connected), 62, 62, "WSS"),
-        (807, "Minecraft", game_detail, _binary_state(reachable), 84, 84, "Minecraft"),
-    ):
-        c.text(x, 121, name, 14, bold=True, anchor="mm", width=title_width, fallback=fallback)
-        c.light(x, 139, state)
-        c.text(x, 155, detail, 12, MUTED, anchor="mm", width=detail_width)
-
-    database_state = status.sqlite_readable
-    if database_state is None:
-        database_detail = unknown_label
-    elif c.cjk:
-        database_detail = "可读" if database_state else "读取失败"
-    else:
-        database_detail = "Readable" if database_state else "Read failed"
-    c.light(595, 173, _binary_state(database_state))
-    c.text(606, 173, f"{c.label('database')} · {database_detail}", 13, MUTED, width=222,
-           fallback=f"SQLite · {database_detail}")
-
-
-def _resources(c: _Canvas, status: RuntimeStatus) -> None:
-    c.box(24, 198, 856, 391)
-    c.text(44, 226, "系统资源", 22, bold=True, fallback="System resources")
-    system = status.system_name or EMPTY
-    os_label = c.label("os")
-    if os_label != message_config.DEFAULTS["info.labels.os"]:
-        system = f"{os_label} {system}"
-    python = status.python_version or EMPTY
-    c.text(836, 226, f"{system}   ·   {c.label('python')} {python}", 20, MUTED, anchor="rm",
-           width=540, fallback=f"{status.system_name or EMPTY}   ·   Python {python}")
-    c.line(44, 253, 836, 253)
-    c.line(299, 271, 299, 369)
-    c.line(575, 271, 575, 369)
-
-    c.ring(86, 321, status.cpu_percent)
-    c.text(148, 304, "CPU", 23, bold=True)
-    cores = status.cpu_cores if status.cpu_cores is not None else EMPTY
-    c.text(148, 337, f"{cores} {c.label('cpu_cores')}", 19, MUTED, width=133, fallback=f"{cores} cores")
-    c.ring(362, 321, status.memory.percent if status.memory is not None else None)
-    c.text(424, 304, c.label("memory"), 22, bold=True, width=133, fallback="Memory")
-    c.text(424, 337, _usage(status.memory), 19, MUTED, width=141)
-
-    disk_percent = status.disk.percent if status.disk is not None else None
-    c.text(597, 287, c.label("disk"), 22, bold=True, width=152, fallback="Disk")
-    c.text(836, 287, _percent(disk_percent), 27, bold=True, anchor="rm")
-    c.text(597, 324, _usage(status.disk), 19, MUTED, width=239)
-    c.box(597, 349, 836, 357, 4, TRACK, None)
-    if disk_percent is not None and disk_percent > 0:
-        filled = 239 * disk_percent / 100
-        c.box(597, 349, 597 + filled, 357, min(4, filled / 2), _resource_color(disk_percent), None)
-
-
-def _bindings(c: _Canvas, status: RuntimeStatus) -> None:
-    c.box(24, 403, 856, 450, 17, "#1a2b36", "#35514f")
-    count = str(status.active_bindings) if status.active_bindings is not None else EMPTY
-    c.text(44, 427, c.label("bindings"), 20, MUTED, width=540, fallback="Active bindings")
-    c.text(836, 427, count, 26, MINT, bold=True, anchor="rm", width=190)
+        return ""
+    image = ImageOps.fit(avatar.convert("RGBA"), (108, 108), method=Image.Resampling.LANCZOS)
+    with BytesIO() as output:
+        image.save(output, format="PNG")
+        return "data:image/png;base64," + b64encode(output.getvalue()).decode("ascii")
 
 
 def render_status(
     status: RuntimeStatus, *, qq_id: str = "", nickname: str | None = None, avatar: Image.Image | None = None,
 ) -> bytes:
-    c = _Canvas()
-    _header(c)
-    _account(c, status, qq_id, nickname, avatar)
-    _services(c, status)
-    _resources(c, status)
-    _bindings(c, status)
+    cjk = _font_source(False) is not None
+    regular = _font_source(False) if cjk else _latin_source(False)
+    bold = (_font_source(True) if cjk else _latin_source(True)) or regular
+    family = _font(regular, 16).getname()[0] if regular is not None else "sans-serif"
+    messages = message_config.MESSAGES
 
+    def text(value: str, size: int, width: int, fallback: str | None = None, *, strong: bool = False) -> str:
+        if not cjk and fallback is not None and not value.isascii():
+            value = fallback
+        return _fit(value, _font(bold if strong else regular, size), width)
+
+    def label(key: str) -> str:
+        return messages.info_text(f"info.labels.{key}")
+
+    onebot_name = label("connection_uptime")
+    if onebot_name == message_config.DEFAULTS["info.labels.connection_uptime"]:
+        onebot_name = label("onebot")
+    onebot_uptime = ""
+    if status.connected and status.connection_seconds is not None:
+        onebot_uptime = _duration(status.connection_seconds, cjk)
+    bot_name = label("bot_uptime")
+    if bot_name == "Bot 进程":
+        bot_name = "NoneBot2"
+
+    api = status.api
+    api_status = ""
+    if api is not None:
+        if api.status_code == 200:
+            api_status = f"{api.latency_ms:.0f} ms"
+        elif api.status_code is not None:
+            api_status = api.summary
+        elif api.error == "Timeout":
+            api_status = "超时" if cjk else "Timeout"
+        elif api.error == "Connection failed":
+            api_status = "连接失败" if cjk else "Unreachable"
+        elif api.error:
+            api_status = "响应异常" if cjk else "Bad HTTP"
+    ws_connected = None if api is None or api.minecraft_connections is None else api.minecraft_connections > 0
+
+    game = status.minecraft
+    players = ""
+    if game is not None and game.reachable and game.online_players is not None and game.max_players is not None:
+        players = f"{game.online_players}/{game.max_players}"
+
+    system_duration = _duration(status.system_seconds, cjk)
+    system_uptime = f"{label('system_uptime')}运行 · {system_duration}"
+    system = status.system_name or EMPTY
+    os_label = label("os")
+    if os_label != message_config.DEFAULTS["info.labels.os"]:
+        system = f"{os_label} {system}"
+    python = status.python_version or EMPTY
+
+    count = str(status.active_bindings) if status.active_bindings is not None else EMPTY
+    count_width = _font(bold, 47).getlength(count)
+    count_size = max(15, min(47, int(128 * 47 / max(1, count_width))))
+    cores = status.cpu_cores if status.cpu_cores is not None else EMPTY
     local_time = status.checked_at.astimezone()
     offset = local_time.strftime("%z")
-    c.line(24, 466, 856, 466)
-    c.text(856, 484, f"{local_time:%Y-%m-%d  %H:%M} UTC{offset[:3]}:{offset[3:5]}", 17, MUTED, anchor="rm")
-    with BytesIO() as png:
-        c.image.resize((WIDTH, HEIGHT), Image.Resampling.LANCZOS).save(png, format="PNG")
-        return png.getvalue()
+
+    fields = {
+        "font_family": family,
+        "title": text(messages.info_text("info.title"), 29, 610, "MC-QQ-Auth", strong=True),
+        "page_label": "运行状态" if cjk else "Runtime status",
+        "avatar": _avatar_uri(avatar),
+        "avatar_display": "inline" if avatar is not None else "none",
+        "account_color": _binary_color(status.connected),
+        "nickname": text(nickname or "QQ 机器人", 23, 405, "QQ Bot", strong=True),
+        "qq": text(f"QQ {qq_id or EMPTY}", 16, 405),
+        "bindings_label": text(label("bindings"), 16, 110, "Active bindings"),
+        "bindings_count": text(count, count_size, 128, strong=True),
+        "bindings_size": count_size,
+        "services_label": "服务状态" if cjk else "Services",
+        "system_uptime": text(system_uptime, 15, 420, f"Host uptime · {system_duration}"),
+        "onebot_name": text(onebot_name, 14, 99, "OneBot"),
+        "onebot_uptime": text(onebot_uptime, 13, 99),
+        "bot_name": text(bot_name, 16, 98, "NoneBot2", strong=True),
+        "bot_uptime": text(_duration(status.bot_seconds, cjk), 13, 98),
+        "api_name": text(label("api"), 16, 118, "FastAPI", strong=True),
+        "api_status": text(api_status, 13, 84),
+        "minecraft_title_y": 257 if players else 269,
+        "minecraft_players": text(players, 13, 102),
+        "sqlite_name": text(label("database"), 13, 132, "SQLite"),
+        "resources_label": "系统资源" if cjk else "System resources",
+        "system": text(f"{system} · {label('python')} {python}", 15, 590, f"{status.system_name or EMPTY} · Python {python}"),
+        "cpu_detail": text(f"{cores} {label('cpu_cores')}", 14, 244, f"{cores} cores"),
+        "memory_label": text(label("memory"), 16, 185, "Memory", strong=True),
+        "memory_detail": _usage(status.memory),
+        "disk_label": text(label("disk"), 16, 185, "Disk", strong=True),
+        "disk_detail": _usage(status.disk),
+        "timestamp": f"{local_time:%Y-%m-%d %H:%M} UTC{offset[:3]}:{offset[3:5]}",
+    }
+    for key, color in (
+        ("onebot", _binary_color(status.connected)),
+        ("api", _api_color(api)),
+        ("wss", _binary_color(ws_connected)),
+        ("sqlite", _binary_color(status.sqlite_readable)),
+        ("minecraft", _binary_color(game.reachable if game is not None else None)),
+    ):
+        fields[f"{key}_color"], fields[f"{key}_dash"] = color, STROKE_DASHES[color]
+    for key, percent in (
+        ("cpu", status.cpu_percent),
+        ("memory", status.memory.percent if status.memory is not None else None),
+        ("disk", status.disk.percent if status.disk is not None else None),
+    ):
+        fields[f"{key}_value"], fields[f"{key}_bar"], fields[f"{key}_color"] = _meter(percent)
+
+    svg = _template().substitute({key: escape(str(value)) for key, value in fields.items()})
+    font_files = list(dict.fromkeys(source[0] for source in (regular, bold) if source is not None))
+    return svg_to_bytes(svg_string=svg, skip_system_fonts=bool(font_files), font_files=font_files)

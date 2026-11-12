@@ -105,7 +105,7 @@ info:
     api: "FastAPI"
     database: "SQLite"
     system_uptime: "系统"
-    bot_uptime: "Bot 进程"
+    bot_uptime: "NoneBot2"
     connection_uptime: "OneBot 连接"
     os: "操作系统"
     python: "Python"
