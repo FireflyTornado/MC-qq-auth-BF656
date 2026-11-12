@@ -10,7 +10,7 @@
 curl --fail http://127.0.0.1:18765/internal/health
 ```
 
-成功返回 HTTP 200 和 `{"status":"ok"}`。`status` 是固定的存活标记。数据库状态不参与此响应，连接失败或代理错误需检查进程、监听地址和代理配置。
+成功返回 HTTP 200 和 `{"status":"ok","minecraft_connections":0}`。`status` 是固定的存活标记，`minecraft_connections` 是当前 API 进程登记的 Minecraft 授权 WebSocket 连接数。连接数仅反映授权通道，玩家端口可达性由独立探测判断。数据库状态不参与此响应。
 
 ## GET /internal/mc/snapshot
 

@@ -36,7 +36,9 @@ cp -n bot/.env.example bot/.env
 
 群成员对账在 OneBot 连接成功后自动执行。在 Bot 运行配置中填写 NoneBot 的 `SUPERUSERS` JSON 数组后，配置的超级用户可在目标群使用 `/授权对账` 或 `/reconcile` 触发对账，并用 `/信息` 或 `/info` 查看状态图。群详情交叉校验依赖当前 Compose 固定的 NapCat 所提供的 `get_group_detail_info`。名单请求失败、为空、两次名单不一致或人数校验失败时，对账跳过撤权。
 
-`/认证测试` 和 `/ping` 访问本机 `127.0.0.1:18765/internal/health`，返回状态码与耗时。超级用户触发 `/info` 后，目标群会看到当前 Bot 的完整 QQ 号、昵称、头像以及服务、资源和授权状态。页脚只显示 Bot 服务器的当地日期、时间及 UTC 偏移。磁盘优先统计 `/opt`，缺失时统计根目录。
+`/认证测试` 和 `/ping` 访问本机 `127.0.0.1:18765/internal/health`，返回状态码与耗时。超级用户触发 `/info` 后，状态图左列显示 Bot 的完整 QQ 号、昵称、头像、采集时间、有效绑定数和系统资源，右列显示服务链路。采集时间使用 Bot 服务器的当地时间并标注 UTC 偏移。磁盘优先统计 `/opt`，缺失时统计根目录。
+
+可在 `bot/.env` 设置 `MC_STATUS_ADDRESS=play.example.org:25565`，使用 Minecraft Java 服务器列表探测游戏服，并显示服务器返回的在线人数。地址留空时显示灰色「未探测」，配置读取失败时显示黄色「配置读取失败」。服务状态图上的 WSS 来自本机 API 的授权连接数，可独立显示授权通道是否连接。
 
 昵称来自 OneBot 的当前登录信息。Bot 通过 HTTPS 从 `q1.qlogo.cn` 按自身 QQ 号获取头像，成功缓存 30 分钟，失败缓存 1 分钟。下载不可用时使用内置机器人图标。SQLite 状态和有效绑定数来自同一次只读授权查询。FastAPI 返回 HTTP 200 时亮绿灯，非 200 响应和超时亮黄灯，连接失败亮红灯。
 
@@ -80,7 +82,7 @@ info:
 
 每条文案最多 1000 字符，配置文件最多 64 KiB。缺失字段、空文案、类型错误、非法占位符和过长文案使用该字段的内置默认值。请用布尔值 `true` 或 `false` 设置通知开关。无法解析或读取文件时使用全部内置默认值，群通知因此默认关闭，日志只记录错误类别和已知字段。状态图使用 `info.title` 和仍在显示的 `info.labels.*`，超宽时截断并加省略号。`info.footer` 和隐藏字段的旧标签仍可解析，便于保留已有配置。
 
-Ubuntu 可用 `sudo apt install fonts-noto-cjk` 为状态图启用中文。字体缺失时，Bot 记录一次提示并使用内置字体和英文备用标签。
+状态图由 `bot/status_card.svg` 模板和 Python 依赖 `resvg-py` 生成 PNG。Ubuntu 可用 `sudo apt install fonts-noto-cjk` 为状态图启用中文。缺少中文字体时，Bot 记录一次提示并使用英文备用标签。
 
 日常编辑 `messages.yml` 后，只需重启 Bot。
 

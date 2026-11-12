@@ -68,7 +68,7 @@ DEFAULTS = MappingProxyType({
     "info.labels.api": "FastAPI",
     "info.labels.database": "SQLite",
     "info.labels.system_uptime": "系统",
-    "info.labels.bot_uptime": "Bot 进程",
+    "info.labels.bot_uptime": "NoneBot2",
     "info.labels.connection_uptime": "OneBot 连接",
     "info.labels.os": "操作系统",
     "info.labels.python": "Python",

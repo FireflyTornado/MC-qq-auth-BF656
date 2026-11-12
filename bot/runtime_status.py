@@ -1,3 +1,4 @@
+import json
 import platform
 import sqlite3
 import time
@@ -11,13 +12,16 @@ from threading import Lock
 from typing import Literal, TypeVar
 
 import psutil
+from mcstatus import JavaServer
 
 import database
+from app_config import ConfigError, load_config
 
 
 UNAVAILABLE = "Unavailable"
 HEALTH_TIMEOUT = 2
 HEALTH_PORT = 18765
+MINECRAFT_TIMEOUT = 2
 CPU_SAMPLE_INTERVAL = 0.12
 OutcomeKind = Literal["reconcile", "notify"]
 T = TypeVar("T")
@@ -43,29 +47,36 @@ class HealthResult:
     status_code: int | None
     latency_ms: float
     error: str | None = None
+    minecraft_connections: int | None = None
 
     @property
     def summary(self) -> str:
         return f"HTTP {self.status_code}" if self.status_code is not None else self.error or UNAVAILABLE
 
 
-def check_fastapi() -> HealthResult:
-    """Read only the HTTP status from the fixed loopback health endpoint."""
+def check_fastapi(*, include_connections: bool = False) -> HealthResult:
+    """Probe the fixed loopback health endpoint."""
     started = time.monotonic()
-    status = None
-    error = None
     try:
         with closing(HTTPConnection("127.0.0.1", HEALTH_PORT, timeout=HEALTH_TIMEOUT)) as connection:
             connection.request("GET", "/internal/health")
             with connection.getresponse() as response:
                 status = response.status
+                latency = (time.monotonic() - started) * 1000
+                connections = None
+                if status == 200 and include_connections:
+                    payload = _probe(lambda: json.loads(response.read(4096)))
+                    count = payload.get("minecraft_connections") if isinstance(payload, dict) else None
+                    if type(count) is int and count >= 0:
+                        connections = count
+                return HealthResult(status, latency, minecraft_connections=connections)
     except TimeoutError:
         error = "Timeout"
     except OSError:
         error = "Connection failed"
     except HTTPException:
         error = "Invalid HTTP response"
-    return HealthResult(status, (time.monotonic() - started) * 1000, error)
+    return HealthResult(None, (time.monotonic() - started) * 1000, error)
 
 
 @dataclass(frozen=True)
@@ -73,6 +84,14 @@ class ResourceUsage:
     used: int
     total: int
     percent: float
+
+
+@dataclass(frozen=True)
+class MinecraftStatus:
+    # None represents a configuration read failure before probing.
+    reachable: bool | None
+    online_players: int | None = None
+    max_players: int | None = None
 
 
 @dataclass(frozen=True)
@@ -94,6 +113,7 @@ class RuntimeStatus:
     auth_version: int | None = None
     last_reconcile: str = "No attempts yet"
     last_notice: str = "No attempts yet"
+    minecraft: MinecraftStatus | None = None
 
 
 def _probe(check: Callable[[], T]) -> T | None:
@@ -102,6 +122,23 @@ def _probe(check: Callable[[], T]) -> T | None:
     except Exception:
         # Status fields never contain exception text, which can include paths or addresses.
         return None
+
+
+def check_minecraft() -> MinecraftStatus | None:
+    try:
+        config = load_config()
+    except ConfigError:
+        return MinecraftStatus(None)
+    address = (config.get("MC_STATUS_ADDRESS") or "").strip()
+    if not address:
+        return None
+    reply = _probe(lambda: JavaServer.lookup(address, timeout=MINECRAFT_TIMEOUT).status(tries=1))
+    if reply is None:
+        return MinecraftStatus(False)
+    online, maximum = reply.players.online, reply.players.max
+    if type(online) is int and online >= 0 and type(maximum) is int and maximum >= 0:
+        return MinecraftStatus(True, online, maximum)
+    return MinecraftStatus(True)
 
 
 def _binding_status(group_id: str) -> tuple[int, int]:
@@ -155,7 +192,8 @@ def _disk() -> ResourceUsage | None:
 
 
 def collect_status(group_id: str, *, connected: bool, connected_for: float | None) -> RuntimeStatus:
-    api = _probe(check_fastapi)
+    api = _probe(lambda: check_fastapi(include_connections=True))
+    minecraft = _probe(check_minecraft)
     binding_status = _probe(lambda: _binding_status(group_id))
     version, count = binding_status if binding_status is not None else (None, None)
     with _outcome_lock:
@@ -178,5 +216,6 @@ def collect_status(group_id: str, *, connected: bool, connected_for: float | Non
         auth_version=version,
         last_reconcile=reconciliation,
         last_notice=notification,
+        minecraft=minecraft,
         checked_at=datetime.now(UTC),
     )
