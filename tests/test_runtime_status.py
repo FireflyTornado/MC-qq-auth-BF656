@@ -165,7 +165,7 @@ class RuntimeStatusTests(unittest.TestCase):
             probe.side_effect = TimeoutError("private address")
             self.assertEqual(runtime_status.check_minecraft(), runtime_status.MinecraftStatus(False))
 
-    def test_custom_title_label_and_long_nickname_fit_and_footer_is_local_time_only(self):
+    def test_custom_title_label_and_long_nickname_fit_and_account_shows_local_time(self):
         path = self.path.with_name("messages.yml")
         long_text = ("很长的状态名称" if status_image._font_source(False) else "Long title ") * 80
         qq_id = "12345678901234567890"
@@ -185,7 +185,8 @@ class RuntimeStatusTests(unittest.TestCase):
         self.assertEqual(nodes["bot-name"].text, "NoneBot2")
         self.assertEqual(nodes["qq-id"].text, f"QQ {qq_id}")
         self.assertEqual(nodes["bindings-count"].text, "0")
-        self.assertEqual(nodes["bindings-count"].get("font-size"), "47")
+        self.assertEqual(nodes["bindings-count"].get("font-size"), "58")
+        self.assertIn(nodes["timestamp"], nodes["account"])
         self.assertEqual(nodes["timestamp"].text, "2026-11-09 15:30 UTC+08:00")
         for key in ("title", "nickname", "api-name"):
             with self.subTest(key=key):
@@ -194,13 +195,13 @@ class RuntimeStatusTests(unittest.TestCase):
     def test_render_escapes_nickname_and_clips_avatar_in_png(self):
         status = runtime_status.RuntimeStatus(datetime.now(UTC))
         avatar = Image.new("RGB", (35, 50), "#e14430")
-        nickname = '<image id="injected"/> & name'
+        nickname = '<g id="x"/> & name'
         nodes = self.rendered_svg(status, nickname=nickname, avatar=avatar)
         self.assertEqual(nodes["nickname"].text, nickname)
-        self.assertNotIn("injected", nodes)
+        self.assertNotIn("x", nodes)
         with Image.open(BytesIO(render_status(status, avatar=avatar))) as image:
-            self.assertEqual(image.getpixel((76, 120))[:3], (225, 68, 48))
-            self.assertNotEqual(image.getpixel((49, 93))[:3], (225, 68, 48))
+            self.assertEqual(image.getpixel((76, 129))[:3], (225, 68, 48))
+            self.assertNotEqual(image.getpixel((49, 102))[:3], (225, 68, 48))
 
     def test_render_maps_usage_and_service_states(self):
         gib = 1024 ** 3
@@ -245,6 +246,7 @@ class RuntimeStatusTests(unittest.TestCase):
         self.assertEqual(nodes["bot-name"].text, "NoneBot2")
         self.assertEqual(nodes["onebot-uptime"].text, "2小时 0分" if cjk else "2h 0m")
         self.assertEqual(nodes["bot-uptime"].text, "1天 0小时" if cjk else "1d 0h")
+        self.assertIn(nodes["system-uptime"], nodes["resources"])
         self.assertIn("3天 6小时" if cjk else "3d 6h", nodes["system-uptime"].text)
         self.assertEqual(nodes["api-status"].text, "12 ms")
         self.assertEqual(nodes["minecraft-players"].text, "8/30")

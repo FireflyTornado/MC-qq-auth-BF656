@@ -96,7 +96,7 @@ commands:
 info:
   # 图片上按单行显示，超过可用宽度时截断。
   title: "MC-QQ-Auth"
-  # 旧版兼容项。新版页脚显示 Bot 服务器的当地时间。
+  # 旧版兼容项。采集时间显示在账号卡内，使用 Bot 服务器的当地时间。
   footer: "MC-QQ-Auth"
   labels:
     # bot、auth_version、last_reconcile 和 last_notice 为旧版兼容项。

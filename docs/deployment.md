@@ -36,7 +36,7 @@ cp -n bot/.env.example bot/.env
 
 群成员对账在 OneBot 连接成功后自动执行。在 Bot 运行配置中填写 NoneBot 的 `SUPERUSERS` JSON 数组后，配置的超级用户可在目标群使用 `/授权对账` 或 `/reconcile` 触发对账，并用 `/信息` 或 `/info` 查看状态图。群详情交叉校验依赖当前 Compose 固定的 NapCat 所提供的 `get_group_detail_info`。名单请求失败、为空、两次名单不一致或人数校验失败时，对账跳过撤权。
 
-`/认证测试` 和 `/ping` 访问本机 `127.0.0.1:18765/internal/health`，返回状态码与耗时。超级用户触发 `/info` 后，目标群会看到当前 Bot 的完整 QQ 号、昵称、头像以及服务、资源和授权状态。页脚只显示 Bot 服务器的当地日期、时间及 UTC 偏移。磁盘优先统计 `/opt`，缺失时统计根目录。
+`/认证测试` 和 `/ping` 访问本机 `127.0.0.1:18765/internal/health`，返回状态码与耗时。超级用户触发 `/info` 后，状态图左列显示 Bot 的完整 QQ 号、昵称、头像、采集时间、有效绑定数和系统资源，右列显示服务链路。采集时间使用 Bot 服务器的当地时间并标注 UTC 偏移。磁盘优先统计 `/opt`，缺失时统计根目录。
 
 可在 `bot/.env` 设置 `MC_STATUS_ADDRESS=play.example.org:25565`，使用 Minecraft Java 服务器列表探测游戏服，并显示服务器返回的在线人数。留空时显示「未探测」。服务状态图上的 WSS 来自本机 API 的授权连接数，可独立显示授权通道是否连接。
 

@@ -15,7 +15,8 @@ import message_config
 from runtime_status import HealthResult, ResourceUsage, RuntimeStatus
 
 
-WIDTH, HEIGHT = 880, 512
+WIDTH, HEIGHT = 720, 760
+METER_WIDTH = 322
 MINT, YELLOW, RED, GRAY = "#7ae7c2", "#f5ce79", "#ff8c91", "#8a9aa8"
 STROKE_DASHES = {MINT: "none", YELLOW: "8 3", RED: "5 4", GRAY: "2 4"}
 EMPTY = "—"
@@ -106,7 +107,7 @@ def _meter(percent: float | None) -> tuple[str, float, str]:
     if percent is None:
         return EMPTY, 0, GRAY
     color = RED if percent >= 95 else YELLOW if percent >= 85 else MINT
-    return f"{percent:.0f}%", round(244 * percent / 100, 2), color
+    return f"{percent:.0f}%", round(METER_WIDTH * percent / 100, 2), color
 
 
 def _usage(usage: ResourceUsage | None) -> str:
@@ -181,38 +182,42 @@ def render_status(
     python = status.python_version or EMPTY
 
     count = str(status.active_bindings) if status.active_bindings is not None else EMPTY
-    count_width = _font(bold, 47).getlength(count)
-    count_size = max(15, min(47, int(128 * 47 / max(1, count_width))))
+    max_count_size, max_count_width = 58, 168
+    count_width = _font(bold, max_count_size).getlength(count)
+    count_size = max(15, min(max_count_size, int(max_count_width * max_count_size / max(1, count_width))))
     cores = status.cpu_cores if status.cpu_cores is not None else EMPTY
     local_time = status.checked_at.astimezone()
     offset = local_time.strftime("%z")
 
     fields = {
         "font_family": family,
-        "title": text(messages.info_text("info.title"), 29, 610, "MC-QQ-Auth", strong=True),
+        "title": text(messages.info_text("info.title"), 29, 485, "MC-QQ-Auth", strong=True),
         "page_label": "运行状态" if cjk else "Runtime status",
         "avatar": _avatar_uri(avatar),
         "avatar_display": "inline" if avatar is not None else "none",
         "account_color": _binary_color(status.connected),
-        "nickname": text(nickname or "QQ 机器人", 23, 405, "QQ Bot", strong=True),
-        "qq": text(f"QQ {qq_id or EMPTY}", 16, 405),
-        "bindings_label": text(label("bindings"), 16, 110, "Active bindings"),
-        "bindings_count": text(count, count_size, 128, strong=True),
+        "nickname": text(nickname or "QQ 机器人", 23, 245, "QQ Bot", strong=True),
+        "qq": text(f"QQ {qq_id or EMPTY}", 16, 245),
+        "timestamp_label": "采集时间" if cjk else "Collected",
+        "bindings_label": text(label("bindings"), 19, 145, "Active bindings"),
+        "bindings_count": text(count, count_size, max_count_width, strong=True),
         "bindings_size": count_size,
         "services_label": "服务状态" if cjk else "Services",
-        "system_uptime": text(system_uptime, 15, 420, f"Host uptime · {system_duration}"),
-        "onebot_name": text(onebot_name, 14, 99, "OneBot"),
-        "onebot_uptime": text(onebot_uptime, 13, 99),
-        "bot_name": text(bot_name, 16, 98, "NoneBot2", strong=True),
-        "bot_uptime": text(_duration(status.bot_seconds, cjk), 13, 98),
-        "api_name": text(label("api"), 16, 118, "FastAPI", strong=True),
-        "api_status": text(api_status, 13, 84),
-        "minecraft_title_y": 257 if players else 269,
-        "minecraft_players": text(players, 13, 102),
-        "sqlite_name": text(label("database"), 13, 132, "SQLite"),
+        "system_uptime": text(system_uptime, 14, 212 if cjk else 151, f"Host uptime · {system_duration}"),
+        "onebot_name": text(onebot_name, 14, 78 if onebot_uptime else 164, "OneBot"),
+        "onebot_separator": " · " if onebot_uptime else "",
+        "onebot_uptime": text(onebot_uptime, 14, 73),
+        "bot_name": text(bot_name, 16, 110, "NoneBot2", strong=True),
+        "bot_uptime": text(_duration(status.bot_seconds, cjk), 13, 110),
+        "api_name": text(label("api"), 16, 110, "FastAPI", strong=True),
+        "api_status": text(api_status, 14, 164),
+        "minecraft_title_y": 635 if players else 647,
+        "minecraft_players": text(players, 13, 110),
+        "sqlite_name": text(label("database"), 13, 79, "SQLite"),
         "resources_label": "系统资源" if cjk else "System resources",
-        "system": text(f"{system} · {label('python')} {python}", 15, 590, f"{status.system_name or EMPTY} · Python {python}"),
-        "cpu_detail": text(f"{cores} {label('cpu_cores')}", 14, 244, f"{cores} cores"),
+        "system": text(f"{system} · {label('python')} {python}", 15, METER_WIDTH, f"{status.system_name or EMPTY} · Python {python}"),
+        "meter_width": METER_WIDTH,
+        "cpu_detail": text(f"{cores} {label('cpu_cores')}", 14, METER_WIDTH, f"{cores} cores"),
         "memory_label": text(label("memory"), 16, 185, "Memory", strong=True),
         "memory_detail": _usage(status.memory),
         "disk_label": text(label("disk"), 16, 185, "Disk", strong=True),
