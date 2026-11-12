@@ -10,7 +10,7 @@ import message_config
 from runtime_status import HealthResult, ResourceUsage, RuntimeStatus
 
 
-WIDTH, HEIGHT = 880, 580
+WIDTH, HEIGHT = 880, 503
 SCALE = 2
 BG, CARD, BORDER = "#101923", "#192632", "#2b3d4b"
 TEXT, MUTED, MINT = "#f0f6f8", "#a8bbcb", "#7ae7c2"
@@ -187,15 +187,70 @@ def _account(
 
 def _services(c: _Canvas, status: RuntimeStatus) -> None:
     c.box(382, 76, 856, 186)
-    c.text(402, 104, "服务状态", 20, bold=True, fallback="Services")
-    for x, key, state, fallback in (
-        (402, "onebot", _binary_state(status.connected), "OneBot"),
-        (548, "api", _api_state(status.api), "FastAPI"),
-        (694, "database", _binary_state(status.sqlite_readable), "SQLite"),
+    c.text(402, 96, "服务状态", 20, bold=True, fallback="Services")
+    system_duration = _duration(status.system_seconds, c.cjk)
+    c.text(836, 96, f"{c.label('system_uptime')}运行 · {system_duration}", 15, MUTED,
+           anchor="rm", width=265, fallback=f"Host uptime · {system_duration}")
+
+    api = status.api
+    ws_connected = None if api is None or api.minecraft_connections is None else api.minecraft_connections > 0
+    minecraft = status.minecraft
+    reachable = minecraft.reachable if minecraft is not None else None
+
+    connected_label, disconnected_label = ("已连接", "未连接") if c.cjk else ("Linked", "Unlinked")
+    unknown_label = "未知" if c.cjk else "Unknown"
+    onebot_detail = unknown_label
+    if status.connected is True:
+        onebot_detail = connected_label if status.connection_seconds is None else _duration(status.connection_seconds, c.cjk)
+    elif status.connected is False:
+        onebot_detail = disconnected_label
+    ws_detail = unknown_label if ws_connected is None else connected_label if ws_connected else disconnected_label
+
+    api_detail = api.summary if api is not None else unknown_label
+    if api is not None and api.status_code is not None:
+        api_detail = f"{api.summary} · {api.latency_ms:.0f}ms"
+
+    if reachable:
+        game_detail = "可达" if c.cjk else "Reachable"
+        if minecraft.online_players is not None and minecraft.max_players is not None:
+            players = f"{minecraft.online_players}/{minecraft.max_players}"
+            game_detail = f"{game_detail} · {players}" if c.cjk else f"{players} online"
+    elif reachable is False:
+        game_detail = "无响应" if c.cjk else "No response"
+    else:
+        game_detail = "未探测" if c.cjk else "Not probed"
+
+    c.line(423, 139, 807, 139, TRACK, 2)
+    c.line(423, 139, 557, 139, _binary_state(status.connected), 2)
+    c.line(648, 139, 807, 139, _binary_state(ws_connected), 2)
+    c.line(595, 139, 595, 173, TRACK, 2)
+    c.dot(423, 139, 4, MUTED)
+    c.text(423, 121, "NapCat", 14, bold=True, anchor="mm")
+    onebot_key = "connection_uptime"
+    if c.label(onebot_key) == message_config.DEFAULTS["info.labels.connection_uptime"]:
+        onebot_key = "onebot"
+    for x, name, detail, state, title_width, detail_width, fallback in (
+        (486, c.label(onebot_key), onebot_detail, _binary_state(status.connected), 62, 66, "OneBot"),
+        (557, c.label("bot_uptime"), _duration(status.bot_seconds, c.cjk),
+         MINT if status.bot_seconds is not None else GRAY, 66, 66, "Bot"),
+        (648, c.label("api"), api_detail, _api_state(api), 99, 103, "FastAPI"),
+        (731, "WSS", ws_detail, _binary_state(ws_connected), 62, 62, "WSS"),
+        (807, "Minecraft", game_detail, _binary_state(reachable), 84, 84, "Minecraft"),
     ):
-        c.box(x, 126, x + 142, 166, 8, "#243644", None)
-        c.light(x + 16, 146, state)
-        c.text(x + 30, 146, c.label(key), 20, bold=True, width=103, fallback=fallback)
+        c.text(x, 121, name, 14, bold=True, anchor="mm", width=title_width, fallback=fallback)
+        c.light(x, 139, state)
+        c.text(x, 155, detail, 12, MUTED, anchor="mm", width=detail_width)
+
+    database_state = status.sqlite_readable
+    if database_state is None:
+        database_detail = unknown_label
+    elif c.cjk:
+        database_detail = "可读" if database_state else "读取失败"
+    else:
+        database_detail = "Readable" if database_state else "Read failed"
+    c.light(595, 173, _binary_state(database_state))
+    c.text(606, 173, f"{c.label('database')} · {database_detail}", 13, MUTED, width=222,
+           fallback=f"SQLite · {database_detail}")
 
 
 def _resources(c: _Canvas, status: RuntimeStatus) -> None:
@@ -230,22 +285,11 @@ def _resources(c: _Canvas, status: RuntimeStatus) -> None:
         c.box(597, 349, 597 + filled, 357, min(4, filled / 2), _resource_color(disk_percent), None)
 
 
-def _statistics(c: _Canvas, status: RuntimeStatus) -> None:
-    c.box(24, 403, 236, 524, 17, "#1a2b36", "#35514f")
+def _bindings(c: _Canvas, status: RuntimeStatus) -> None:
+    c.box(24, 403, 856, 450, 17, "#1a2b36", "#35514f")
     count = str(status.active_bindings) if status.active_bindings is not None else EMPTY
-    c.text(130, 449, count, 53, MINT, bold=True, anchor="mm", width=174)
-    c.text(130, 494, c.label("bindings"), 20, MUTED, anchor="mm", width=174, fallback="Active bindings")
-    c.box(248, 403, 856, 524)
-    c.text(269, 429, "运行时长", 21, bold=True, fallback="Uptime")
-    c.line(436, 455, 436, 507)
-    c.line(632, 455, 632, 507)
-    for x, width, key, seconds, fallback in (
-        (269, 155, "system_uptime", status.system_seconds, "System"),
-        (456, 155, "bot_uptime", status.bot_seconds, "Bot process"),
-        (652, 184, "connection_uptime", status.connection_seconds, "OneBot connection"),
-    ):
-        c.text(x, 467, _duration(seconds, c.cjk), 25, bold=True, width=width)
-        c.text(x, 500, c.label(key), 18, MUTED, width=width, fallback=fallback)
+    c.text(44, 427, c.label("bindings"), 20, MUTED, width=540, fallback="Active bindings")
+    c.text(836, 427, count, 26, MINT, bold=True, anchor="rm", width=190)
 
 
 def render_status(
@@ -256,12 +300,12 @@ def render_status(
     _account(c, status, qq_id, nickname, avatar)
     _services(c, status)
     _resources(c, status)
-    _statistics(c, status)
+    _bindings(c, status)
 
     local_time = status.checked_at.astimezone()
     offset = local_time.strftime("%z")
-    c.line(24, 540, 856, 540)
-    c.text(856, 558, f"{local_time:%Y-%m-%d  %H:%M} UTC{offset[:3]}:{offset[3:5]}", 17, MUTED, anchor="rm")
+    c.line(24, 466, 856, 466)
+    c.text(856, 484, f"{local_time:%Y-%m-%d  %H:%M} UTC{offset[:3]}:{offset[3:5]}", 17, MUTED, anchor="rm")
     with BytesIO() as png:
         c.image.resize((WIDTH, HEIGHT), Image.Resampling.LANCZOS).save(png, format="PNG")
         return png.getvalue()

@@ -72,6 +72,7 @@ class QQRevocationTests(unittest.IsolatedAsyncioTestCase):
         self.enterContext(patch.object(database, "DB_PATH", self.path))
         self.enterContext(patch.object(message_config, "MESSAGES", message_config.MessageConfig(message_config.DEFAULTS)))
         self.enterContext(patch.object(runtime_status, "_outcomes", {}))
+        self.enterContext(patch.object(runtime_status, "check_minecraft", return_value=None))
         self.enterContext(patch.object(self.status, "get_avatar", return_value=None))
         notify_patch = patch.object(binding_service, "notify_auth_updated", return_value=True)
         self.notify = notify_patch.start()

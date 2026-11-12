@@ -71,8 +71,8 @@ def require_token(authorization: list[str] | None = Header(default=None)) -> Non
 
 
 @app.get("/internal/health")
-def health():
-    return {"status": "ok"}
+async def health():
+    return {"status": "ok", "minecraft_connections": len(connections)}
 
 
 @app.get(

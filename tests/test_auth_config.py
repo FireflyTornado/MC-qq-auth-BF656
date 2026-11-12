@@ -164,6 +164,8 @@ class ApiAuthTests(unittest.IsolatedAsyncioTestCase):
                 self.assertFalse(self.api.connections)
 
     async def test_websocket_connects_and_broadcasts_existing_messages(self):
+        status, _, health = await self.request("/internal/health")
+        self.assertEqual((status, health), (200, {"status": "ok", "minecraft_connections": 0}))
         incoming = asyncio.Queue()
         outgoing = asyncio.Queue()
         await incoming.put({"type": "websocket.connect"})
@@ -179,6 +181,8 @@ class ApiAuthTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(json.loads(connected["text"]), {
                 "type": "connected", "message": "Minecraft authentication connected",
             })
+            status, _, health = await self.request("/internal/health")
+            self.assertEqual((status, health), (200, {"status": "ok", "minecraft_connections": 1}))
             status, _, notify = await self.request(NOTIFY_PATH, [bearer(NOTIFY_TOKEN)], "POST")
             self.assertEqual(status, 200)
             self.assertEqual(notify, {"success": True, "version": VERSION, "delivered": 1})
@@ -188,6 +192,7 @@ class ApiAuthTests(unittest.IsolatedAsyncioTestCase):
             await incoming.put({"type": "websocket.disconnect", "code": 1000})
             await asyncio.wait_for(task, timeout=2)
         self.assertFalse(self.api.connections)
+        self.assertEqual((await self.request("/internal/health"))[2]["minecraft_connections"], 0)
 
     @asynccontextmanager
     async def websocket(self, intercept=None):

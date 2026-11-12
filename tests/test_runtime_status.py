@@ -33,6 +33,7 @@ class RuntimeStatusTests(unittest.TestCase):
         self.path = Path(directory) / "private # auth.db"
         self.enterContext(patch.object(database, "DB_PATH", self.path))
         self.enterContext(patch.object(runtime_status, "_outcomes", {}))
+        self.enterContext(patch.object(runtime_status, "load_config", return_value={}))
 
     def rendered_text(self, status, **identity):
         boxes = {}
@@ -122,8 +123,8 @@ class RuntimeStatusTests(unittest.TestCase):
         self.assertNotIn(str(self.path), repr(status))
         self.assertFalse(self.path.exists())
         boxes = self.rendered_text(status)
-        self.assertEqual(boxes[130, 449][0], "—")
-        self.assertEqual(boxes[652, 467][0], "—")
+        self.assertEqual(boxes[836, 427][0], "—")
+        self.assertTrue(boxes[836, 96][0].endswith("—"))
 
     def test_health_returns_http_status_and_targets_only_loopback(self):
         with patch.object(runtime_status, "HTTPConnection") as http:
@@ -136,6 +137,40 @@ class RuntimeStatusTests(unittest.TestCase):
         http.assert_called_once_with("127.0.0.1", 18765, timeout=2)
         connection.request.assert_called_once_with("GET", "/internal/health")
         connection.close.assert_called_once_with()
+
+    def test_health_reads_optional_connection_count_without_changing_http_result(self):
+        for body, expected in (
+            (b'{"status":"ok","minecraft_connections":1}', 1),
+            (b'{"status":"ok","minecraft_connections":0}', 0),
+            (b'{"status":"ok"}', None),
+            (b'{"minecraft_connections":true}', None),
+            (b'broken', None),
+        ):
+            with self.subTest(body=body), patch.object(runtime_status, "HTTPConnection") as http:
+                response = http.return_value.getresponse.return_value.__enter__.return_value
+                response.status = 200
+                response.read.return_value = body
+                result = runtime_status.check_fastapi(include_connections=True)
+                self.assertEqual((result.status_code, result.minecraft_connections), (200, expected))
+
+    def test_minecraft_probe_reports_unconfigured_reachable_and_unresponsive(self):
+        address = "play.example.org:25565"
+        with (
+            patch.object(runtime_status, "load_config", return_value={}) as config,
+            patch.object(runtime_status.JavaServer, "lookup") as lookup,
+        ):
+            self.assertIsNone(runtime_status.check_minecraft())
+            lookup.assert_not_called()
+
+            config.return_value = {"MC_STATUS_ADDRESS": address}
+            probe = lookup.return_value.status
+            probe.return_value = SimpleNamespace(players=SimpleNamespace(online=0, max=30))
+            self.assertEqual(runtime_status.check_minecraft(), runtime_status.MinecraftStatus(True, 0, 30))
+            lookup.assert_called_once_with(address, timeout=runtime_status.MINECRAFT_TIMEOUT)
+            probe.assert_called_once_with(tries=1)
+
+            probe.side_effect = TimeoutError("private address")
+            self.assertEqual(runtime_status.check_minecraft(), runtime_status.MinecraftStatus(False))
 
     def test_custom_title_label_and_long_nickname_fit_and_footer_is_local_time_only(self):
         path = self.path.with_name("messages.yml")
@@ -152,18 +187,18 @@ class RuntimeStatusTests(unittest.TestCase):
         )
         with patch.object(message_config, "MESSAGES", messages):
             boxes = self.rendered_text(status, qq_id=qq_id, nickname=long_text)
-        self.assertEqual(boxes[724, 146][0], "Auth DB")
-        self.assertEqual(boxes[432, 146][0], "OneBot")
+        self.assertTrue(boxes[606, 173][0].startswith("Auth DB · "))
+        self.assertEqual(boxes[486, 121][0], "OneBot")
         self.assertEqual(boxes[131, 151][0], f"QQ {qq_id}")
-        self.assertEqual(boxes[130, 449][0], "0")
+        self.assertEqual(boxes[836, 427][0], "0")
         self.assertEqual(
-            {text for (_, y), (text, _) in boxes.items() if y > 540},
+            {text for (_, y), (text, _) in boxes.items() if y > 466},
             {"2026-11-09 15:30 UTC+08:00"},
         )
         for position, right, bottom in (
             ((74, 39), 720, 76),
             ((131, 119), 353, 142),
-            ((578, 146), 685, 166),
+            ((648, 121), 699, 139),
         ):
             with self.subTest(position=position):
                 rendered, box = boxes[position]
@@ -189,12 +224,30 @@ class RuntimeStatusTests(unittest.TestCase):
                 boxes = self.rendered_text(status)
             colors = {"ok": status_image.MINT, "warning": status_image.YELLOW,
                       "error": status_image.RED, "unknown": status_image.GRAY}
-            self.assertEqual([call.args[-1] for call in light.call_args_list[1:]], [colors[key] for key in expected])
+            services = [call.args[-1] for call in light.call_args_list]
+            self.assertEqual([services[index] for index in (1, 3, 6)], [colors[key] for key in expected])
             self.assertEqual(boxes[86, 321][0], "12%")
             self.assertEqual(boxes[362, 321][0], "25%")
             self.assertEqual(boxes[836, 287][0], "25%")
             self.assertEqual(boxes[424, 337][0], "2.0 / 8.0 GiB")
             self.assertEqual(boxes[597, 324][0], "20.0 / 80.0 GiB")
+
+    def test_render_separates_wss_state_from_game_reachability_and_shows_uptimes(self):
+        status = runtime_status.RuntimeStatus(
+            checked_at=datetime.now(UTC), connected=True, api=runtime_status.HealthResult(200, 12, minecraft_connections=0),
+            system_seconds=280800, bot_seconds=86400, connection_seconds=7200,
+            minecraft=runtime_status.MinecraftStatus(True, 8, 30),
+        )
+        cjk = status_image._font_source(False) is not None
+        with patch.object(status_image._Canvas, "light", autospec=True) as light:
+            boxes = self.rendered_text(status)
+        self.assertEqual(boxes[486, 155][0], "2小时 0分" if cjk else "2h 0m")
+        self.assertEqual(boxes[557, 155][0], "1天 0小时" if cjk else "1d 0h")
+        self.assertIn("3天 6小时" if cjk else "3d 6h", boxes[836, 96][0])
+        self.assertEqual(boxes[731, 155][0], "未连接" if cjk else "Unlinked")
+        self.assertIn("8/30", boxes[807, 155][0])
+        light.assert_any_call(unittest.mock.ANY, 731, 139, status_image.RED)
+        light.assert_any_call(unittest.mock.ANY, 807, 139, status_image.MINT)
 
     def test_missing_cjk_font_warns_and_renders_fallbacks(self):
         truetype = status_image.ImageFont.truetype
