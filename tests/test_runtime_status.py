@@ -298,12 +298,12 @@ class RuntimeStatusTests(unittest.TestCase):
             nodes = self.rendered_svg(runtime_status.RuntimeStatus(datetime.now(UTC)), nickname="中文昵称")
         warning.assert_called_once()
         self.assertEqual(nodes["nickname"].text, "QQ Bot")
-        self.assertEqual(nodes["resources-label"].text, "System resources")
+        self.assertEqual(nodes["resources-label"].text, "System")
         self.assertEqual(nodes["minecraft-detail"].text, "Not probed")
 
     def test_system_uptime_keeps_custom_ascii_label_without_cjk_fonts(self):
         status = runtime_status.RuntimeStatus(datetime.now(UTC), system_seconds=60)
-        for label, expected in (("Node uptime", "Node uptime"), ("主机", "Host uptime")):
+        for label, expected in (("Node uptime", "Node uptime"), ("主机", "Uptime")):
             messages = message_config.MessageConfig({
                 **message_config.DEFAULTS, "info.labels.system_uptime": label,
             })
@@ -314,6 +314,40 @@ class RuntimeStatusTests(unittest.TestCase):
             ):
                 nodes = self.rendered_svg(status)
                 self.assertEqual(nodes["system-uptime"].text, f"{expected} · 1m")
+
+    def test_english_dashboard_fits_three_digit_bindings_and_long_host_uptime(self):
+        status = runtime_status.RuntimeStatus(
+            datetime.now(UTC), active_bindings=117, system_seconds=(56 * 24 + 12) * 3600,
+        )
+        with patch.object(status_image, "_font_source", return_value=None):
+            nodes = self.rendered_svg(status)
+
+        self.assertEqual(nodes["bindings-label"].text, "Active bindings")
+        self.assertEqual(nodes["bindings-count"].text, "117")
+        self.assertEqual(nodes["resources-label"].text, "System")
+        self.assertEqual(nodes["system-uptime"].text, "Uptime · 56d 12h")
+        self.assertEqual(nodes["system-uptime"].get("y"), nodes["resources-label"].get("y"))
+
+    def test_long_uptime_label_leaves_space_for_title_and_duration(self):
+        status = runtime_status.RuntimeStatus(datetime.now(UTC), system_seconds=(56 * 24 + 12) * 3600)
+        messages = message_config.MessageConfig({
+            **message_config.DEFAULTS,
+            "info.labels.system_uptime": "Custom system uptime label " * 10,
+        })
+        with (
+            patch.object(status_image, "_font_source", return_value=None),
+            patch.object(message_config, "MESSAGES", messages),
+        ):
+            nodes = self.rendered_svg(status)
+
+        title = nodes["resources-label"]
+        uptime = nodes["system-uptime"]
+        title_width = status_image._font(status_image._latin_source(True), 19).getlength(title.text)
+        uptime_width = status_image._font(status_image._latin_source(False), 14).getlength(uptime.text)
+        gap = int(uptime.get("x")) - uptime_width - (int(title.get("x")) + title_width)
+        self.assertTrue(uptime.text.startswith("Custom"))
+        self.assertTrue(uptime.text.endswith("… · 56d 12h"))
+        self.assertGreaterEqual(gap, 16)
 
     def test_health_sanitizes_timeout_and_connection_errors(self):
         for exc, reason in ((TimeoutError, "Timeout"), (ConnectionRefusedError, "Connection failed")):

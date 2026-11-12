@@ -16,7 +16,7 @@ from runtime_status import HealthResult, ResourceUsage, RuntimeStatus
 
 
 WIDTH, HEIGHT = 720, 640
-METER_WIDTH = 322
+LEFT_CONTENT_WIDTH = 322
 MINT, YELLOW, RED, GRAY = "#7ae7c2", "#f5ce79", "#ff8c91", "#8a9aa8"
 STROKE_DASHES = {MINT: "none", YELLOW: "8 3", RED: "5 4", GRAY: "2 4"}
 EMPTY = "—"
@@ -107,7 +107,7 @@ def _meter(percent: float | None) -> tuple[str, float, str]:
     if percent is None:
         return EMPTY, 0, GRAY
     color = RED if percent >= 95 else YELLOW if percent >= 85 else MINT
-    return f"{percent:.0f}%", round(METER_WIDTH * percent / 100, 2), color
+    return f"{percent:.0f}%", round(LEFT_CONTENT_WIDTH * percent / 100, 2), color
 
 
 def _usage(usage: ResourceUsage | None) -> str:
@@ -179,12 +179,17 @@ def render_status(
     elif game.reachable and game.online_players is not None and game.max_players is not None:
         game_detail = f"{game.online_players}/{game.max_players}"
 
+    resources_label = "系统资源" if cjk else "System"
+    resources_label_width = _font(bold, 19).getlength(resources_label)
+    uptime_width = int(LEFT_CONTENT_WIDTH - resources_label_width - 16)
     uptime_label = label("system_uptime")
     if cjk:
         uptime_label = f"{uptime_label}运行"
     elif not uptime_label.isascii():
-        uptime_label = "Host uptime"
-    system_uptime = f"{uptime_label} · {_duration(status.system_seconds, cjk)}"
+        uptime_label = "Uptime"
+    uptime_suffix = f" · {_duration(status.system_seconds, cjk)}"
+    uptime_label_width = int(uptime_width - _font(regular, 14).getlength(uptime_suffix))
+    system_uptime = f"{text(uptime_label, 14, uptime_label_width)}{uptime_suffix}"
     system = status.system_name or EMPTY
     os_label = label("os")
     if os_label != message_config.DEFAULTS["info.labels.os"]:
@@ -195,6 +200,9 @@ def render_status(
     max_count_size, max_count_width = 58, 168
     count_width = _font(bold, max_count_size).getlength(count)
     count_size = max(15, min(max_count_size, int(max_count_width * max_count_size / max(1, count_width))))
+    count_text = text(count, count_size, max_count_width, strong=True)
+    count_width = _font(bold, count_size).getlength(count_text)
+    bindings_label_width = int(LEFT_CONTENT_WIDTH - count_width - 18)
     cores = status.cpu_cores if status.cpu_cores is not None else EMPTY
     local_time = status.checked_at.astimezone()
     offset = local_time.strftime("%z")
@@ -209,11 +217,11 @@ def render_status(
         "nickname": text(nickname or "QQ 机器人", 23, 245, "QQ Bot", strong=True),
         "qq": text(f"QQ {qq_id or EMPTY}", 16, 245),
         "timestamp_label": "采集时间" if cjk else "Collected",
-        "bindings_label": text(label("bindings"), 19, 145, "Active bindings"),
-        "bindings_count": text(count, count_size, max_count_width, strong=True),
+        "bindings_label": text(label("bindings"), 19, bindings_label_width, "Active bindings"),
+        "bindings_count": count_text,
         "bindings_size": count_size,
         "services_label": "服务状态" if cjk else "Services",
-        "system_uptime": text(system_uptime, 14, 212 if cjk else 151),
+        "system_uptime": system_uptime,
         "onebot_name": text(onebot_name, 14, 78 if onebot_uptime else 164, "OneBot"),
         "onebot_separator": " · " if onebot_uptime else "",
         "onebot_uptime": text(onebot_uptime, 14, 73),
@@ -224,10 +232,11 @@ def render_status(
         "minecraft_title_y": 528 if game_detail else 537,
         "minecraft_detail": text(game_detail, 13, 110),
         "sqlite_name": text(label("database"), 13, 79, "SQLite"),
-        "resources_label": "系统资源" if cjk else "System resources",
-        "system": text(f"{system} · {label('python')} {python}", 15, METER_WIDTH, f"{status.system_name or EMPTY} · Python {python}"),
-        "meter_width": METER_WIDTH,
-        "cpu_detail": text(f"{cores} {label('cpu_cores')}", 14, METER_WIDTH, f"{cores} cores"),
+        "resources_label": resources_label,
+        "system": text(f"{system} · {label('python')} {python}", 15, LEFT_CONTENT_WIDTH,
+                       f"{status.system_name or EMPTY} · Python {python}"),
+        "meter_width": LEFT_CONTENT_WIDTH,
+        "cpu_detail": text(f"{cores} {label('cpu_cores')}", 14, LEFT_CONTENT_WIDTH, f"{cores} cores"),
         "memory_label": text(label("memory"), 16, 185, "Memory", strong=True),
         "memory_detail": _usage(status.memory),
         "disk_label": text(label("disk"), 16, 185, "Disk", strong=True),
