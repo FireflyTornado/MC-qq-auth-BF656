@@ -195,7 +195,8 @@ class RuntimeStatusTests(unittest.TestCase):
     def test_render_escapes_nickname_and_clips_avatar_in_png(self):
         status = runtime_status.RuntimeStatus(datetime.now(UTC))
         avatar = Image.new("RGB", (35, 50), "#e14430")
-        nickname = '<g id="x"/> & name'
+        # Keep the escaping sample short enough to fit across fonts.
+        nickname = '<g id="x"/>&'
         nodes = self.rendered_svg(status, nickname=nickname, avatar=avatar)
         self.assertEqual(nodes["nickname"].text, nickname)
         self.assertNotIn("x", nodes)
