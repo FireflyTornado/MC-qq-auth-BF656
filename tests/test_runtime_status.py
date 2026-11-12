@@ -200,8 +200,8 @@ class RuntimeStatusTests(unittest.TestCase):
         self.assertEqual(nodes["nickname"].text, nickname)
         self.assertNotIn("x", nodes)
         with Image.open(BytesIO(render_status(status, avatar=avatar))) as image:
-            self.assertEqual(image.getpixel((76, 129))[:3], (225, 68, 48))
-            self.assertNotEqual(image.getpixel((49, 102))[:3], (225, 68, 48))
+            self.assertEqual(image.getpixel((76, 122))[:3], (225, 68, 48))
+            self.assertNotEqual(image.getpixel((49, 95))[:3], (225, 68, 48))
 
     def test_render_maps_usage_and_service_states(self):
         gib = 1024 ** 3

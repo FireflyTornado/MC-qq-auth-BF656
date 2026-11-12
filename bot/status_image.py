@@ -15,7 +15,7 @@ import message_config
 from runtime_status import HealthResult, ResourceUsage, RuntimeStatus
 
 
-WIDTH, HEIGHT = 720, 760
+WIDTH, HEIGHT = 720, 640
 METER_WIDTH = 322
 MINT, YELLOW, RED, GRAY = "#7ae7c2", "#f5ce79", "#ff8c91", "#8a9aa8"
 STROKE_DASHES = {MINT: "none", YELLOW: "8 3", RED: "5 4", GRAY: "2 4"}
@@ -211,7 +211,7 @@ def render_status(
         "bot_uptime": text(_duration(status.bot_seconds, cjk), 13, 110),
         "api_name": text(label("api"), 16, 110, "FastAPI", strong=True),
         "api_status": text(api_status, 14, 164),
-        "minecraft_title_y": 635 if players else 647,
+        "minecraft_title_y": 528 if players else 537,
         "minecraft_players": text(players, 13, 110),
         "sqlite_name": text(label("database"), 13, 79, "SQLite"),
         "resources_label": "系统资源" if cjk else "System resources",
