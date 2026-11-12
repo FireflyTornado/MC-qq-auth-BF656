@@ -301,6 +301,20 @@ class RuntimeStatusTests(unittest.TestCase):
         self.assertEqual(nodes["resources-label"].text, "System resources")
         self.assertEqual(nodes["minecraft-detail"].text, "Not probed")
 
+    def test_system_uptime_keeps_custom_ascii_label_without_cjk_fonts(self):
+        status = runtime_status.RuntimeStatus(datetime.now(UTC), system_seconds=60)
+        for label, expected in (("Node uptime", "Node uptime"), ("主机", "Host uptime")):
+            messages = message_config.MessageConfig({
+                **message_config.DEFAULTS, "info.labels.system_uptime": label,
+            })
+            with (
+                self.subTest(label=label),
+                patch.object(status_image, "_font_source", return_value=None),
+                patch.object(message_config, "MESSAGES", messages),
+            ):
+                nodes = self.rendered_svg(status)
+                self.assertEqual(nodes["system-uptime"].text, f"{expected} · 1m")
+
     def test_health_sanitizes_timeout_and_connection_errors(self):
         for exc, reason in ((TimeoutError, "Timeout"), (ConnectionRefusedError, "Connection failed")):
             with self.subTest(exc=exc), patch.object(runtime_status, "HTTPConnection") as http:

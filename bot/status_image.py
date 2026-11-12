@@ -179,8 +179,12 @@ def render_status(
     elif game.reachable and game.online_players is not None and game.max_players is not None:
         game_detail = f"{game.online_players}/{game.max_players}"
 
-    system_duration = _duration(status.system_seconds, cjk)
-    system_uptime = f"{label('system_uptime')}运行 · {system_duration}"
+    uptime_label = label("system_uptime")
+    if cjk:
+        uptime_label = f"{uptime_label}运行"
+    elif not uptime_label.isascii():
+        uptime_label = "Host uptime"
+    system_uptime = f"{uptime_label} · {_duration(status.system_seconds, cjk)}"
     system = status.system_name or EMPTY
     os_label = label("os")
     if os_label != message_config.DEFAULTS["info.labels.os"]:
@@ -209,7 +213,7 @@ def render_status(
         "bindings_count": text(count, count_size, max_count_width, strong=True),
         "bindings_size": count_size,
         "services_label": "服务状态" if cjk else "Services",
-        "system_uptime": text(system_uptime, 14, 212 if cjk else 151, f"Host uptime · {system_duration}"),
+        "system_uptime": text(system_uptime, 14, 212 if cjk else 151),
         "onebot_name": text(onebot_name, 14, 78 if onebot_uptime else 164, "OneBot"),
         "onebot_separator": " · " if onebot_uptime else "",
         "onebot_uptime": text(onebot_uptime, 14, 73),
