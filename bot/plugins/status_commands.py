@@ -8,10 +8,11 @@ from nonebot.adapters.onebot.v11 import Bot, MessageSegment
 from nonebot.permission import SUPERUSER
 
 import message_config
+from app_config import ConfigError, info_layout, load_config
 from qq_avatar import get_avatar, is_qq_id
 from qq_group import TARGET_GROUP_ID, group_rule
 from runtime_status import check_fastapi, collect_status
-from status_image import render_status
+from status_image import render_custom_status, render_status
 
 
 driver = get_driver()
@@ -69,9 +70,15 @@ async def _nickname(bot: Bot) -> str | None:
 
 
 def _status_png(qq_id: str, nickname: str | None, connected: bool, connected_for: float | None) -> bytes:
+    try:
+        layout = info_layout(load_config())
+    except ConfigError as exc:
+        logger.warning("[MC-QQ-AUTH] {}，状态图使用 default", exc)
+        layout = "default"
+    render = render_custom_status if layout == "custom" else render_status
     avatar = get_avatar(qq_id)
     status = collect_status(str(TARGET_GROUP_ID), connected=connected, connected_for=connected_for)
-    return render_status(status, qq_id=qq_id, nickname=nickname, avatar=avatar)
+    return render(status, qq_id=qq_id, nickname=nickname, avatar=avatar)
 
 
 @info.handle()

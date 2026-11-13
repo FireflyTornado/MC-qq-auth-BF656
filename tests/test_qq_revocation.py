@@ -21,6 +21,7 @@ from nonebot.rule import TrieRule
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "bot"))
 
+import app_config
 import binding_service
 import database
 import message_config
@@ -595,6 +596,7 @@ commands:
 
     async def test_info_requires_superuser_and_sends_png_for_both_aliases(self):
         with (
+            patch.object(self.status, "load_config", return_value={}),
             patch.object(runtime_status, "check_fastapi", return_value=runtime_status.HealthResult(200, 15)),
             patch.object(self.bot, "call_api", AsyncMock(return_value={"user_id": BOT, "nickname": "夜萤助手"})) as login,
             patch.object(self.status, "render_status", wraps=self.status.render_status) as render,
@@ -620,8 +622,47 @@ commands:
         )
         self.status.get_avatar.assert_has_calls([call(str(BOT)), call(str(BOT))])
 
+    async def test_info_reads_layout_from_config_for_both_aliases(self):
+        env_file = self.path.with_name(".env")
+        with (
+            patch.object(app_config, "ENV_FILE", env_file),
+            patch.dict(os.environ, {}, clear=True),
+            patch.object(self.bot, "call_api", AsyncMock(return_value={"user_id": BOT, "nickname": "夜萤助手"})),
+            patch.object(self.status, "collect_status") as collect,
+            patch.object(self.status, "render_status", return_value=b"default") as default_render,
+            patch.object(self.status, "render_custom_status", return_value=b"custom") as custom_render,
+            patch.object(self.status.logger, "warning") as warning,
+        ):
+            for configured, override, expected, warn in (
+                (None, None, b"default", False),
+                ("", None, b"default", False),
+                ("custom", None, b"custom", False),
+                ("custom", "default", b"default", False),
+                ("typo", None, b"default", True),
+            ):
+                with self.subTest(configured=configured, override=override):
+                    if configured is not None:
+                        env_file.write_text(f"INFO_LAYOUT={configured}\n", encoding="utf-8")
+                    with patch.dict(os.environ, {} if override is None else {"INFO_LAYOUT": override}):
+                        for alias in ("/info", "/信息"):
+                            default_render.reset_mock()
+                            custom_render.reset_mock()
+                            warning.reset_mock()
+                            reply = await self.command_reply(alias, user=MEMBER)
+                            self.assertEqual(reply.type, "image")
+                            self.assertEqual(base64.b64decode(reply.data["file"].removeprefix("base64://")), expected)
+                            selected, unused = (
+                                (custom_render, default_render) if expected == b"custom" else (default_render, custom_render)
+                            )
+                            selected.assert_called_once_with(
+                                collect.return_value, qq_id=str(BOT), nickname="夜萤助手", avatar=None,
+                            )
+                            unused.assert_not_called()
+                            self.assertEqual(warning.call_count, int(warn))
+
     async def test_info_login_failure_still_sends_image_with_current_account_id(self):
         with (
+            patch.object(self.status, "load_config", return_value={}),
             patch.object(runtime_status, "check_fastapi", return_value=runtime_status.HealthResult(200, 15)),
             patch.object(self.bot, "call_api", AsyncMock(side_effect=TimeoutError)),
             patch.object(self.status, "render_status", wraps=self.status.render_status) as render,

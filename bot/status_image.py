@@ -261,3 +261,10 @@ def render_status(
     svg = _template().substitute({key: escape(str(value)) for key, value in fields.items()})
     font_files = list(dict.fromkeys(source[0] for source in (regular, bold) if source is not None))
     return svg_to_bytes(svg_string=svg, skip_system_fonts=bool(font_files), font_files=font_files)
+
+
+def render_custom_status(
+    status: RuntimeStatus, *, qq_id: str = "", nickname: str | None = None, avatar: Image.Image | None = None,
+) -> bytes:
+    """Use the existing card until the custom design is available."""
+    return render_status(status, qq_id=qq_id, nickname=nickname, avatar=avatar)

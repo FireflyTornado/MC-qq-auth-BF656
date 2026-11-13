@@ -40,6 +40,8 @@ cp -n bot/.env.example bot/.env
 
 可在 `bot/.env` 设置 `MC_STATUS_ADDRESS=play.example.org:25565`，使用 Minecraft Java 服务器列表探测游戏服，并显示服务器返回的在线人数。地址留空时显示灰色「未探测」，配置读取失败时显示黄色「配置读取失败」。服务状态图上的 WSS 来自本机 API 的授权连接数，可独立显示授权通道是否连接。
 
+在 `bot/.env` 设置 `INFO_LAYOUT=default` 或 `INFO_LAYOUT=custom`，选择 `/info` 和 `/信息` 使用的版式。Bot 在生成状态图时读取该配置，修改文件后下次调用生效。未设置或留空时使用 `default`。配置值无效或文件无法读取时，Bot 记录警告并使用 `default`。`custom` 目前复用默认状态卡的视觉。
+
 昵称来自 OneBot 的当前登录信息。Bot 通过 HTTPS 从 `q1.qlogo.cn` 按自身 QQ 号获取头像，成功缓存 30 分钟，失败缓存 1 分钟。下载不可用时使用内置机器人图标。SQLite 状态和有效绑定数来自同一次只读授权查询。FastAPI 返回 HTTP 200 时亮绿灯，非 200 响应和超时亮黄灯，连接失败亮红灯。
 
 ### 机器人文案与群通知

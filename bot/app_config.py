@@ -36,6 +36,13 @@ def load_config() -> dict[str, str | None]:
     return {**_normalize(file_values), **_normalize(dict(os.environ))}
 
 
+def info_layout(config: dict[str, str | None]) -> str:
+    layout = (config.get("INFO_LAYOUT") or "").strip() or "default"
+    if layout not in ("default", "custom"):
+        raise ConfigError("INFO_LAYOUT 必须是 default 或 custom")
+    return layout
+
+
 def is_bearer_token(value: str) -> bool:
     return len(value) <= MAX_TOKEN_LENGTH and TOKEN_PATTERN.fullmatch(value) is not None
 
