@@ -26,9 +26,9 @@ running = asyncio.Lock()
 recent: OrderedDict[tuple[int, int, int], float] = OrderedDict()
 REPLAY_WINDOW = 300
 MAX_RECENT = 1024
-MAX_HTTP_RESPONSE = 8192
+MAX_HTTP_RESPONSE = 12288
 REPLIES = {
-    "ok": "指令调用已完成。",
+    "ok": "命令已返回，服务端无输出。",
     "rejected": "该指令或参数未获服务端许可。",
     "error": "服务端执行失败或无法确认结果。",
     "busy": "有指令正在处理，请稍后重试。",
@@ -84,7 +84,7 @@ def submit(token: str, payload: dict) -> tuple[str, str]:
         status, output = result.get("status"), result.get("output", "")
         if isinstance(status, str) and status in REPLIES and isinstance(output, str):
             return status, "".join(
-                char for char in output if char == "\n" or unicodedata.category(char)[0] != "C"
+                char for char in output if char in "\r\n\t" or unicodedata.category(char) not in {"Cc", "Cs"}
             )
     return "unknown", ""
 
@@ -128,7 +128,5 @@ async def handle_sudo(event: GroupMessageEvent) -> None:
         except TimeoutError:
             status, output = "timeout", ""
         logger.info("/sudo #{} qq={} result={}", request_id, event.user_id, status)
-        text = REPLIES[status]
-        if output:
-            text += "\n" + output
+        text = output if output.strip() else REPLIES[status]
         await sudo.finish(MessageSegment.text(text))

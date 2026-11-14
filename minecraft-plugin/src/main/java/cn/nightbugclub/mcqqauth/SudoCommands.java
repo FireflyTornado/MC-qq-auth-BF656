@@ -1,20 +1,19 @@
 package cn.nightbugclub.mcqqauth;
 
-import org.bukkit.OfflinePlayer;
 import org.bukkit.Server;
-import org.bukkit.entity.Player;
+import org.bukkit.command.CommandException;
 
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.HashSet;
 import java.util.Set;
+import java.util.function.Supplier;
 import java.util.regex.Pattern;
 
 final class SudoCommands {
     static final String ALLOWLIST_FILE = "sudo-allowlist.txt";
     private static final Pattern COMMAND_LABEL = Pattern.compile("[A-Za-z0-9_.-]+(?::[A-Za-z0-9_.-]+)?");
-    private static final Pattern WHITELIST_ADD = Pattern.compile("minecraft:whitelist add ([A-Za-z0-9_]{1,16})");
 
     record Result(String status, String output) {
         Result(String status) {
@@ -23,13 +22,19 @@ final class SudoCommands {
     }
 
     private final Server server;
+    private final Supplier<MohistCommandFeedback.Capture> openFeedback;
     // Reload and dispatch are serialized on the Minecraft main thread.
     private Set<String> allowed;
     private boolean dispatching;
 
     SudoCommands(Server server, Set<String> allowed) {
+        this(server, allowed, new MohistCommandFeedback(server)::open);
+    }
+
+    SudoCommands(Server server, Set<String> allowed, Supplier<MohistCommandFeedback.Capture> openFeedback) {
         this.server = server;
         this.allowed = Set.copyOf(allowed);
+        this.openFeedback = openFeedback;
     }
 
     int reloadAllowlist(Path file) throws IOException {
@@ -79,32 +84,32 @@ final class SudoCommands {
         if (server.getCommandAliases().keySet().stream().anyMatch(target::equalsIgnoreCase)) {
             return new Result("rejected");
         }
+        MohistCommandFeedback.Capture feedback;
+        try {
+            feedback = openFeedback.get();
+        } catch (IllegalStateException e) {
+            return new Result("error", "服务端命令反馈接口不可用，指令未执行。");
+        }
         dispatching = true;
         try {
-            if (!server.dispatchCommand(server.getConsoleSender(), qualified)) {
+            boolean dispatched;
+            try {
+                dispatched = server.dispatchCommand(feedback.sender(), qualified);
+            } catch (CommandException e) {
+                String output = feedback.output().get();
+                if (output.isBlank()) {
+                    throw e;
+                }
+                return new Result("error", output);
+            }
+            String output = feedback.output().get();
+            if (!dispatched && output.isBlank()) {
                 return new Result("error", "服务端未找到该命令。");
             }
-            return feedback(qualified);
+            return new Result(dispatched ? "ok" : "error", output);
         } finally {
             dispatching = false;
         }
-    }
-
-    private Result feedback(String dispatched) {
-        if (dispatched.equals("minecraft:list")) {
-            var names = server.getOnlinePlayers().stream().map(Player::getName).sorted().toList();
-            return new Result("ok", "在线玩家 " + names.size() + "/" + server.getMaxPlayers()
-                    + (names.isEmpty() ? "" : "：" + String.join(", ", names)));
-        }
-        var add = WHITELIST_ADD.matcher(dispatched);
-        if (add.matches()) {
-            String name = add.group(1);
-            boolean listed = server.getWhitelistedPlayers().stream().map(OfflinePlayer::getName)
-                    .anyMatch(name::equalsIgnoreCase);
-            return listed ? new Result("ok", name + " 已在白名单中。")
-                    : new Result("error", "未能确认 " + name + " 已加入白名单。");
-        }
-        return new Result("ok", "服务端命令调用已返回。");
     }
 
     private static String label(String command) {

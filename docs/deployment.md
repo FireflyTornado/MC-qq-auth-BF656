@@ -341,7 +341,9 @@ sudo:
 
 前缀按大小写和空格边界匹配。写入 `whitelist` 即开放整个原版白名单命令，包括 `whitelist off`。只写 `whitelist add` 则允许 `/sudo whitelist add Steve`，并拒绝 `whitelist remove Steve` 和 `whitelist addall Steve`。匹配后，参数交由 Minecraft 校验。无命名空间的指令使用 `minecraft:`。插件指令需要在清单和群消息里都写完整命名空间，例如 `example:inspect`。
 
-启用并重启 Bot、FastAPI 和 Minecraft 服务端后，可以在清单中加入 `list`，在控制台执行 `mcqqauth sudo reload`，再用指定 QQ 在目标群发 `/sudo list`，检查在线人数和名字的回显。普通命令回执表示 Bukkit 的命令调用已返回，部分命令的详情会输出到服务器控制台。Minecraft 原版白名单独立于本项目的 QQ 绑定准入。
+启用并重启 Bot、FastAPI 和 Minecraft 服务端后，可以在清单中加入 `list`，在控制台执行 `mcqqauth sudo reload`，再用指定 QQ 在目标群发 `/sudo list`，检查在线人数和名字的回显。也可以用 `/sudo list invalid-argument` 检查语法错误的回显。Minecraft 原版白名单独立于本项目的 QQ 绑定准入。
+
+Mohist 1.20.1 下，插件为每条命令创建独立的远程控制台反馈缓冲，无需开启 RCON 监听端口。服务端发给命令执行者的成功或错误反馈直接以纯文本回到群中，保留换行。输出最多回传 1500 个字符，过长会以省略号截断。机器人会过滤部分控制字符。执行返回后缓冲为空时会提示「命令已返回，服务端无输出」。插件直接写入全局日志的内容和命令返回后的异步输出留在服务端。需要实际服务端控制台身份的指令仍须在控制台运行。当前实现依赖 Mohist 1.20.1 的反馈接口，接口不可用时会拒绝执行并回报原因。
 
 每次提交一条纯文本命令。在机器人发出结果前，新的请求会收到忙碌提示。等待满 30 秒会回复「执行超时，结果未知」，已经开始的指令仍可能完成。机器人不会自动重发。Bot 和 FastAPI 日志可按请求编号关联群号、QQ 号、命令和回执。要关闭功能，可把 `MC_SUDO_QQ_IDS` 置空数组并重启 Bot 和 FastAPI，或将插件的 `sudo.enabled` 改为 `false` 后重启游戏服。
 

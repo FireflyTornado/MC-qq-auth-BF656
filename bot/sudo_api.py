@@ -20,6 +20,7 @@ from sudo_config import (
 logger = logging.getLogger("uvicorn.error.mc_qq_auth.sudo")
 PLUGIN_RESULTS = {"ok", "rejected", "error", "busy", "expired"}
 MAX_MESSAGE_BYTES = 8192
+MAX_RESULT_MESSAGE_BYTES = 12288
 SEND_TIMEOUT = 3
 
 
@@ -127,7 +128,7 @@ def sudo_router(
                 if message["type"] == "websocket.disconnect":
                     break
                 raw = message.get("text")
-                if raw is None or len(raw.encode("utf-8")) > MAX_MESSAGE_BYTES:
+                if raw is None or len(raw.encode("utf-8")) > MAX_RESULT_MESSAGE_BYTES:
                     await websocket.close(code=1003 if raw is None else 1009)
                     break
                 try:

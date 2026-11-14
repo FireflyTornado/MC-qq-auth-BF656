@@ -87,7 +87,10 @@ class MCQQAuthPluginTest {
     @Test
     void sudoReloadChecksConsoleAndReplacesRulesOrPausesUntilFixed() throws Exception {
         var commands = new ArrayDeque<SudoCommands>();
-        try (var channels = mockConstruction(SudoChannel.class,
+        RemoteConsoleCommandSender remote = admin(RemoteConsoleCommandSender.class);
+        try (var feedback = mockConstruction(MohistCommandFeedback.class, (capture, context) ->
+                    when(capture.open()).thenReturn(new MohistCommandFeedback.Capture(remote, () -> "")));
+             var channels = mockConstruction(SudoChannel.class,
                 (channel, context) -> commands.add((SudoCommands) context.arguments().get(1)))) {
             Path allowlist = dataFolder.resolve(SudoCommands.ALLOWLIST_FILE);
             Files.writeString(allowlist, "say\nmcqqauth:mcqqauth\n");
@@ -100,16 +103,15 @@ class MCQQAuthPluginTest {
             SudoCommands live = commands.remove();
             ConsoleCommandSender console = admin(ConsoleCommandSender.class);
             when(server.getConsoleSender()).thenReturn(console);
-            when(server.dispatchCommand(console, "minecraft:say hi")).thenReturn(true);
-            when(server.dispatchCommand(console, "minecraft:whitelist on")).thenReturn(true);
-            when(server.dispatchCommand(console, "mcqqauth:mcqqauth sudo reload")).thenAnswer(call -> {
+            when(server.dispatchCommand(remote, "minecraft:say hi")).thenReturn(true);
+            when(server.dispatchCommand(remote, "minecraft:whitelist on")).thenReturn(true);
+            when(server.dispatchCommand(remote, "mcqqauth:mcqqauth sudo reload")).thenAnswer(call -> {
                 execute(console, "sudo", "reload");
                 return true;
             });
 
             Files.writeString(allowlist, "whitelist\n");
             Player player = admin(Player.class);
-            RemoteConsoleCommandSender remote = admin(RemoteConsoleCommandSender.class);
             execute(player, "sudo", "reload");
             execute(remote, "sudo", "reload");
             verify(player).sendMessage(contains("仅限 Minecraft 服务端控制台"));

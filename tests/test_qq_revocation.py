@@ -499,7 +499,7 @@ events:
         )))
         self.enterContext(patch.object(self.sudo, "recent", self.sudo.recent.copy()))
         submit = self.enterContext(patch.object(
-            self.sudo, "submit", return_value=("ok", "[CQ:at,qq=all]"),
+            self.sudo, "submit", return_value=("ok", "Players:\n[CQ:at,qq=all]\n"),
         ))
         await self.bot.handle_event(self.group_message("/sudo list", user=MEMBER))
         await self.bot.handle_event(self.group_message("/sudo list", group=OTHER_GROUP))
@@ -526,7 +526,7 @@ events:
             await asyncio.wait_for(started_reply.wait(), 2)
             await self.bot.handle_event(self.group_message("/sudo say hello", message_id=3))
             self.assertIn("正在处理", Message(replies[-1]).extract_plain_text())
-            self.assertEqual(Message(replies[0]), Message(MessageSegment.text("指令调用已完成。\n[CQ:at,qq=all]")))
+            self.assertEqual(Message(replies[0]), Message(MessageSegment.text("Players:\n[CQ:at,qq=all]\n")))
         finally:
             finish_reply.set()
             await asyncio.wait_for(first, 2)
@@ -546,6 +546,18 @@ events:
             reply = await self.command_reply("/sudo list", message_id=42)
         self.assertEqual(Message(reply).extract_plain_text(), "执行超时，结果未知。")
         submit.assert_called_once()
+
+    async def test_sudo_returns_raw_error_and_reports_empty_feedback(self):
+        self.enterContext(patch.object(self.sudo, "settings", SudoSettings(
+            frozenset({str(ABSENT)}), "bot-token", "plugin-token",
+        )))
+        self.enterContext(patch.object(self.sudo, "recent", self.sudo.recent.copy()))
+        error = "Incorrect argument\nlist bad<--[HERE]\n"
+        with patch.object(self.sudo, "submit", side_effect=[("error", error), ("ok", "")]):
+            self.assertEqual(Message(await self.command_reply("/sudo list bad", message_id=43)).extract_plain_text(),
+                             error)
+            self.assertEqual(Message(await self.command_reply("/sudo list", message_id=44)).extract_plain_text(),
+                             "命令已返回，服务端无输出。")
 
     async def test_bilingual_binding_commands_share_behavior(self):
         replies = []
