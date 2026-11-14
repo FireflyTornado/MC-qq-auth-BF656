@@ -314,6 +314,35 @@ FastAPI 按上面的命令监听回环地址。异地游戏主机接入时，只
 
 `/internal/mc/notify` 应从公网路由中排除，`/internal/health` 留给本机或受信探活。WebUI 和 OneBot 端口同样保留在回环地址。完整协议见 [API 文档](api.md)。
 
+### QQ群管理指令
+
+默认关闭。启用时，在 Bot 和 FastAPI 共用的 `bot/.env` 中设置以下变量。群号取现有的 `TARGET_GROUP_ID`，账号名单与 `SUPERUSERS` 独立。
+
+```dotenv
+MC_SUDO_QQ_IDS=["123456789"]
+MC_SUDO_BOT_TOKEN=REPLACE_WITH_MC_SUDO_BOT_TOKEN
+MC_SUDO_PLUGIN_TOKEN=REPLACE_WITH_MC_SUDO_PLUGIN_TOKEN
+```
+
+把两个 Token 分别替换为独立的随机值，并与授权、通知和 OneBot 的凭据区分。Bot 通过固定的回环地址 `127.0.0.1:18765` 提交指令。反代只为游戏主机增加 `/internal/mc/sudo/ws` 的 WSS 路由，转发 Upgrade 和 Authorization 头，尽可能限制到游戏主机的来源地址。将 `/internal/mc/sudo/submit` 留在回环地址。FastAPI 继续使用单 worker，两个主机应同步时钟，时差控制在一秒内。
+
+更新插件 JAR，在 Minecraft 插件的 `config.yml` 中加入以下设置。仅填写插件专用的 `MC_SUDO_PLUGIN_TOKEN` 值。
+
+```yaml
+sudo:
+  enabled: true
+  websocket-url: "wss://auth.example.org/internal/mc/sudo/ws"
+  token: "REPLACE_WITH_MC_SUDO_PLUGIN_TOKEN"
+```
+
+插件首次启动时会在 `config.yml` 同目录创建 `sudo-allowlist.txt`。文件默认没有允许规则。用 UTF-8 编辑，每行一个命令前缀，省略开头的 `/`。空行和以 `#` 开头的行会被跳过。若曾配置 `sudo.allowed-commands`，请手动把仍需开放的条目移入新清单。修改清单后重启 Minecraft 服务端。
+
+前缀按大小写和空格边界匹配。写入 `whitelist` 即开放整个原版白名单命令，包括 `whitelist off`。只写 `whitelist add` 则允许 `/sudo whitelist add Steve`，并拒绝 `whitelist remove Steve` 和 `whitelist addall Steve`。匹配后，参数交由 Minecraft 校验。无命名空间的指令使用 `minecraft:`。插件指令需要在清单和群消息里都写完整命名空间，例如 `example:inspect`。
+
+启用并重启 Bot、FastAPI 和 Minecraft 服务端后，可以在清单中加入 `list`，重启游戏服，再用指定 QQ 在目标群发 `/sudo list`，检查在线人数和名字的回显。普通命令回执表示 Bukkit 的命令调用已返回，部分命令的详情会输出到服务器控制台。Minecraft 原版白名单独立于本项目的 QQ 绑定准入。
+
+每次提交一条纯文本命令。在机器人发出结果前，新的请求会收到忙碌提示。等待满 30 秒会回复「执行超时，结果未知」，已经开始的指令仍可能完成。机器人不会自动重发。Bot 和 FastAPI 日志可按请求编号关联群号、QQ 号、命令和回执。要关闭功能，可把 `MC_SUDO_QQ_IDS` 置空数组并重启 Bot 和 FastAPI，或将插件的 `sudo.enabled` 改为 `false` 后重启游戏服。
+
 ## 本地测试和锁文件维护
 
 开发环境按同一条 `pip install -r requirements.txt` 命令安装依赖。测试使用标准库 `unittest`、`sqlite3` 和临时文件，HTTP/WebSocket 测试直接调用 ASGI 应用。当前无需单独的开发锁、TestClient、httpx 或 pytest。

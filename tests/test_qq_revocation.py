@@ -14,7 +14,7 @@ from unittest.mock import AsyncMock, call, patch
 import nonebot
 from PIL import Image
 from nonebot.adapters.onebot.v11 import (
-    Adapter, Bot, GroupDecreaseNoticeEvent, GroupIncreaseNoticeEvent, GroupMessageEvent, Message,
+    Adapter, Bot, GroupDecreaseNoticeEvent, GroupIncreaseNoticeEvent, GroupMessageEvent, Message, MessageSegment,
 )
 from nonebot.adapters.onebot.v11.exception import ActionFailed
 from nonebot.rule import TrieRule
@@ -25,6 +25,7 @@ import binding_service
 import database
 import message_config
 import runtime_status
+from sudo_config import SudoSettings
 
 GROUP = 101
 OTHER_GROUP = 102
@@ -62,6 +63,7 @@ class QQRevocationTests(unittest.IsolatedAsyncioTestCase):
         cls.events = importlib.import_module("plugins.qq_events")
         importlib.import_module("plugins.qq_bindings")
         cls.status = importlib.import_module("plugins.status_commands")
+        cls.sudo = importlib.import_module("plugins.qq_sudo")
 
     def setUp(self):
         directory = tempfile.TemporaryDirectory()
@@ -477,10 +479,10 @@ events:
         self.assertIsNone(self.binding())
         self.notify.assert_called_once_with()
 
-    def group_message(self, text, *, user=ABSENT, group=GROUP):
+    def group_message(self, text, *, user=ABSENT, group=GROUP, message_id=1):
         return GroupMessageEvent.model_validate({
             "time": DEPARTED_AT, "self_id": BOT, "post_type": "message", "message_type": "group",
-            "sub_type": "normal", "message_id": 1, "group_id": group, "user_id": user,
+            "sub_type": "normal", "message_id": message_id, "group_id": group, "user_id": user,
             "message": Message(text), "original_message": Message(text), "raw_message": text,
             "font": 0, "sender": {},
         })
@@ -490,6 +492,60 @@ events:
         await self.bot.handle_event(self.group_message(text, **event_fields))
         self.reply.assert_awaited_once()
         return self.reply.call_args.kwargs["message"]
+
+    async def test_sudo_requires_explicit_qq_in_target_group_and_holds_slot_until_reply(self):
+        self.enterContext(patch.object(self.sudo, "settings", SudoSettings(
+            frozenset({str(ABSENT)}), "bot-token", "plugin-token",
+        )))
+        self.enterContext(patch.object(self.sudo, "recent", self.sudo.recent.copy()))
+        submit = self.enterContext(patch.object(
+            self.sudo, "submit", return_value=("ok", "[CQ:at,qq=all]"),
+        ))
+        await self.bot.handle_event(self.group_message("/sudo list", user=MEMBER))
+        await self.bot.handle_event(self.group_message("/sudo list", group=OTHER_GROUP))
+        self.reply.assert_not_awaited()
+        submit.assert_not_called()
+
+        usage = await self.command_reply("/sudo list\nsay hi")
+        self.assertIn("用法", Message(usage).extract_plain_text())
+        submit.assert_not_called()
+
+        started_reply = asyncio.Event()
+        finish_reply = asyncio.Event()
+        replies = []
+
+        async def send_reply(*, event, message, **kwargs):
+            replies.append(message)
+            if event.message_id == 2:
+                started_reply.set()
+                await finish_reply.wait()
+
+        self.reply.side_effect = send_reply
+        first = asyncio.create_task(self.bot.handle_event(self.group_message("/sudo list", message_id=2)))
+        try:
+            await asyncio.wait_for(started_reply.wait(), 2)
+            await self.bot.handle_event(self.group_message("/sudo say hello", message_id=3))
+            self.assertIn("正在处理", Message(replies[-1]).extract_plain_text())
+            self.assertEqual(Message(replies[0]), Message(MessageSegment.text("指令调用已完成。\n[CQ:at,qq=all]")))
+        finally:
+            finish_reply.set()
+            await asyncio.wait_for(first, 2)
+        await self.bot.handle_event(self.group_message("/sudo list", message_id=2))
+        submit.assert_called_once()
+        token, payload = submit.call_args.args
+        self.assertEqual((token, payload["group_id"], payload["qq_id"], payload["command"]),
+                         ("bot-token", str(GROUP), str(ABSENT), "list"))
+
+    async def test_sudo_uncertain_response_times_out_without_retry(self):
+        self.enterContext(patch.object(self.sudo, "settings", SudoSettings(
+            frozenset({str(ABSENT)}), "bot-token", "plugin-token",
+        )))
+        self.enterContext(patch.object(self.sudo, "recent", self.sudo.recent.copy()))
+        self.enterContext(patch.object(self.sudo, "SUDO_TIMEOUT", 0.05))
+        with patch.object(self.sudo, "submit", return_value=("unknown", "")) as submit:
+            reply = await self.command_reply("/sudo list", message_id=42)
+        self.assertEqual(Message(reply).extract_plain_text(), "执行超时，结果未知。")
+        submit.assert_called_once()
 
     async def test_bilingual_binding_commands_share_behavior(self):
         replies = []

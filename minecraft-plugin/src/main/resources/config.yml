@@ -28,6 +28,12 @@ sync:
   reconnect-min-ms: 1000
   reconnect-max-ms: 30000
 
+sudo:
+  enabled: false
+  websocket-url: ""
+  token: ""
+  # 指令允许清单由同目录的 sudo-allowlist.txt 管理。
+
 messages:
   unauthorized: "此 Minecraft 游戏 ID 未获得授权，请先在 QQ 群中绑定。"
   not-ready: "授权服务暂不可用，请稍后重新连接。"

@@ -15,12 +15,14 @@ import org.yaml.snakeyaml.error.YAMLException;
 import java.io.IOException;
 import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.FileAlreadyExistsException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 
 public final class MCQQAuthPlugin extends JavaPlugin {
 
     private volatile AuthorizationService authorization;
+    private SudoChannel sudoChannel;
     private AuthorizationModeController modes;
     private AuthorizationListener listener;
     private ObserveNotice observeNotice;
@@ -80,6 +82,36 @@ public final class MCQQAuthPlugin extends JavaPlugin {
                     }
                 }));
         authorization.start();
+        startSudo(config, settings.token);
+    }
+
+    private void startSudo(YamlConfiguration config, String authToken) {
+        try {
+            Path allowlist = getDataFolder().toPath().resolve(SudoCommands.ALLOWLIST_FILE);
+            if (Files.notExists(allowlist)) {
+                try (var template = MCQQAuthPlugin.class.getResourceAsStream("/" + SudoCommands.ALLOWLIST_FILE)) {
+                    if (template == null) {
+                        throw new IOException("Missing sudo allowlist template");
+                    }
+                    try {
+                        Files.copy(template, allowlist);
+                    } catch (FileAlreadyExistsException ignored) {
+                        // The administrator created the file while the plugin was starting.
+                    }
+                }
+            }
+            SudoChannel.Settings sudo = SudoChannel.Settings.read(config, authToken);
+            if (sudo != null) {
+                Server server = getServer();
+                sudoChannel = new SudoChannel(sudo, new SudoCommands(server, SudoCommands.readAllowlist(allowlist)),
+                        task -> server.getScheduler().runTask(this, task), getLogger());
+                sudoChannel.start();
+            }
+        } catch (IOException | SecurityException e) {
+            getLogger().warning("/sudo 已关闭：无法读取 " + SudoCommands.ALLOWLIST_FILE);
+        } catch (IllegalArgumentException e) {
+            getLogger().warning("/sudo 已关闭：" + e.getMessage());
+        }
     }
 
     private YamlConfiguration readConfig() throws IOException, InvalidConfigurationException {
@@ -92,6 +124,10 @@ public final class MCQQAuthPlugin extends JavaPlugin {
 
     @Override
     public void onDisable() {
+        if (sudoChannel != null) {
+            sudoChannel.close();
+            sudoChannel = null;
+        }
         if (modes != null) {
             modes.close();
             listener.clearExemptions();

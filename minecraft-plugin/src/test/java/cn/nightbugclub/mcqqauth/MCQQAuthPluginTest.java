@@ -73,6 +73,17 @@ class MCQQAuthPluginTest {
     }
 
     @Test
+    void sudoAllowlistIsCreatedEmptyAndExistingRulesArePreserved() throws Exception {
+        Path allowlist = dataFolder.resolve(SudoCommands.ALLOWLIST_FILE);
+        start("mode: OBSERVE\n" + TEST_API);
+        assertEquals(Set.of(), SudoCommands.readAllowlist(allowlist));
+        plugin.onDisable();
+        Files.writeString(allowlist, "whitelist add\n");
+        start("mode: OBSERVE\n" + TEST_API);
+        assertEquals(Set.of("whitelist add"), SudoCommands.readAllowlist(allowlist));
+    }
+
+    @Test
     void bothListenersRegisterOnceAndObserveReportsOfflineBehavior() throws Exception {
         start("mode: OBSERVE");
         verify(plugins).registerEvents(isA(ObserveNotice.class), eq(plugin));
