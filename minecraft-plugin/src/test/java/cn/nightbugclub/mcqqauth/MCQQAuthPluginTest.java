@@ -75,20 +75,24 @@ class MCQQAuthPluginTest {
 
     @Test
     void sudoAllowlistIsCreatedEmptyAndExistingRulesArePreserved() throws Exception {
-        Path allowlist = dataFolder.resolve(SudoCommands.ALLOWLIST_FILE);
-        start("mode: OBSERVE\n" + TEST_API);
-        assertEquals(Set.of(), SudoCommands.readAllowlist(allowlist));
-        plugin.onDisable();
-        Files.writeString(allowlist, "whitelist add\n");
-        start("mode: OBSERVE\n" + TEST_API);
-        assertEquals(Set.of("whitelist add"), SudoCommands.readAllowlist(allowlist));
+        try (var services = mockConstruction(AuthorizationService.class)) {
+            Path allowlist = dataFolder.resolve(SudoCommands.ALLOWLIST_FILE);
+            start("mode: OBSERVE\n" + TEST_API);
+            assertEquals(Set.of(), SudoCommands.readAllowlist(allowlist));
+            plugin.onDisable();
+            Files.writeString(allowlist, "whitelist add\n");
+            start("mode: OBSERVE\n" + TEST_API);
+            assertEquals(Set.of("whitelist add"), SudoCommands.readAllowlist(allowlist));
+            plugin.onDisable();
+        }
     }
 
     @Test
     void sudoReloadChecksConsoleAndReplacesRulesOrPausesUntilFixed() throws Exception {
         var commands = new ArrayDeque<SudoCommands>();
         RemoteConsoleCommandSender remote = admin(RemoteConsoleCommandSender.class);
-        try (var feedback = mockConstruction(MohistCommandFeedback.class, (capture, context) ->
+        try (var services = mockConstruction(AuthorizationService.class);
+             var feedback = mockConstruction(MohistCommandFeedback.class, (capture, context) ->
                     when(capture.open()).thenReturn(new MohistCommandFeedback.Capture(
                             remote, new BoundedCommandOutput()::snapshot)));
              var channels = mockConstruction(SudoChannel.class,
