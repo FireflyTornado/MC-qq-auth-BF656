@@ -531,10 +531,42 @@ events:
             finish_reply.set()
             await asyncio.wait_for(first, 2)
         await self.bot.handle_event(self.group_message("/sudo list", message_id=2))
+        await self.bot.handle_event(self.group_message("/sudo say hello", message_id=3))
         submit.assert_called_once()
+        self.assertEqual(len(replies), 2)
         token, payload = submit.call_args.args
         self.assertEqual((token, payload["group_id"], payload["qq_id"], payload["command"]),
                          ("bot-token", str(GROUP), str(ABSENT), "list"))
+        await self.bot.handle_event(self.group_message("/sudo say hello", message_id=4))
+        self.assertEqual(submit.call_count, 2)
+
+    async def test_sudo_full_replay_cache_does_not_evict_or_later_execute_rejected_messages(self):
+        self.enterContext(patch.object(self.sudo, "settings", SudoSettings(
+            frozenset({str(ABSENT)}), "bot-token", "plugin-token",
+        )))
+        self.enterContext(patch.object(self.sudo, "recent", self.sudo.recent.copy()))
+        self.enterContext(patch.object(self.sudo, "MAX_RECENT", 1))
+        self.enterContext(patch.object(self.sudo, "replay_cache_blocked_until", 0.0))
+        clock = self.enterContext(patch.object(self.sudo, "time", wraps=self.sudo.time))
+        clock.monotonic.return_value = 100.0
+        with patch.object(self.sudo, "submit", return_value=("ok", "", False)) as submit:
+            await self.command_reply("/sudo list", message_id=50)
+            clock.monotonic.return_value = 120.0
+            reply = await self.command_reply("/sudo say hello", message_id=51)
+            self.assertIn("指令请求过多", Message(reply).extract_plain_text())
+            self.reply.reset_mock()
+            await self.bot.handle_event(self.group_message("/sudo list", message_id=50))
+            self.reply.assert_not_awaited()
+
+            # The admitted ID has expired, but the untracked rejection is still within its window.
+            clock.monotonic.return_value = 410.0
+            reply = await self.command_reply("/sudo say hello", message_id=51)
+            self.assertIn("指令请求过多", Message(reply).extract_plain_text())
+            submit.assert_called_once()
+
+            clock.monotonic.return_value = 710.0
+            await self.command_reply("/sudo say hello", message_id=52)
+            self.assertEqual(submit.call_count, 2)
 
     async def test_sudo_uncertain_response_times_out_without_retry(self):
         self.enterContext(patch.object(self.sudo, "settings", SudoSettings(

@@ -37,6 +37,7 @@ running = asyncio.Lock()
 recent: OrderedDict[tuple[int, int, int], float] = OrderedDict()
 REPLAY_WINDOW = 300
 MAX_RECENT = 1024
+replay_cache_blocked_until = 0.0
 UPLOAD_TIMEOUT = 20
 REPLIES = {
     "ok": "命令已返回，服务端无输出。",
@@ -123,25 +124,31 @@ async def upload_output(bot: Bot, group_id: int, request_id: str, output: str) -
 
 @sudo.handle()
 async def handle_sudo(bot: Bot, event: GroupMessageEvent) -> None:
+    global replay_cache_blocked_until
+
     if settings is None:
         return
     command = command_from(event)
     if command is None:
         await sudo.finish(MessageSegment.text("用法：/sudo <一条纯文本 Minecraft 指令>"))
         return
+    now = time.monotonic()
+    while recent and next(iter(recent.values())) <= now - REPLAY_WINDOW:
+        recent.popitem(last=False)
+    key = (event.self_id, event.group_id, event.message_id)
+    if key in recent:
+        return
+    if len(recent) >= MAX_RECENT or now < replay_cache_blocked_until:
+        # Reject untracked messages until their redelivery window has passed.
+        replay_cache_blocked_until = now + REPLAY_WINDOW
+        await sudo.finish(MessageSegment.text("指令请求过多，暂无法受理。请等待至少 5 分钟后重新发送。"))
+        return
+    recent[key] = now
+
     if running.locked():
         await sudo.finish(MessageSegment.text(REPLIES["busy"]))
         return
     async with running:
-        now = time.monotonic()
-        while recent and next(iter(recent.values())) <= now - REPLAY_WINDOW:
-            recent.popitem(last=False)
-        key = (event.self_id, event.group_id, event.message_id)
-        if key in recent:
-            return
-        recent[key] = now
-        if len(recent) > MAX_RECENT:
-            recent.popitem(last=False)
         request_id = uuid4().hex
         payload = {
             "id": request_id,
