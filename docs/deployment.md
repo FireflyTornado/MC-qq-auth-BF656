@@ -335,11 +335,13 @@ sudo:
   token: "REPLACE_WITH_MC_SUDO_PLUGIN_TOKEN"
 ```
 
-插件首次启动时会在 `config.yml` 同目录创建 `sudo-allowlist.txt`。文件默认没有允许规则。用 UTF-8 编辑，每行一个命令前缀，省略开头的 `/`。空行和以 `#` 开头的行会被跳过。若曾配置 `sudo.allowed-commands`，请手动把仍需开放的条目移入新清单。修改清单后重启 Minecraft 服务端。
+插件首次启动时会在 `config.yml` 同目录创建 `sudo-allowlist.txt`。文件默认没有允许规则。用 UTF-8 编辑，每行一个命令前缀，省略开头的 `/`。空行和以 `#` 开头的行会被跳过。若曾配置 `sudo.allowed-commands`，请手动把仍需开放的条目移入新清单。
+
+保存清单后，在 Minecraft 服务端控制台执行 `mcqqauth sudo reload`。插件校验整份清单后立即替换规则，并报告加载条数。留空清单会加载零条规则。文件无法读取或格式无效时，插件清空生效规则并暂停群内 `/sudo`。修正文件后再次执行同一条指令即可恢复。此操作只读取清单，无需重启游戏服、Bot 或 FastAPI。
 
 前缀按大小写和空格边界匹配。写入 `whitelist` 即开放整个原版白名单命令，包括 `whitelist off`。只写 `whitelist add` 则允许 `/sudo whitelist add Steve`，并拒绝 `whitelist remove Steve` 和 `whitelist addall Steve`。匹配后，参数交由 Minecraft 校验。无命名空间的指令使用 `minecraft:`。插件指令需要在清单和群消息里都写完整命名空间，例如 `example:inspect`。
 
-启用并重启 Bot、FastAPI 和 Minecraft 服务端后，可以在清单中加入 `list`，重启游戏服，再用指定 QQ 在目标群发 `/sudo list`，检查在线人数和名字的回显。普通命令回执表示 Bukkit 的命令调用已返回，部分命令的详情会输出到服务器控制台。Minecraft 原版白名单独立于本项目的 QQ 绑定准入。
+启用并重启 Bot、FastAPI 和 Minecraft 服务端后，可以在清单中加入 `list`，在控制台执行 `mcqqauth sudo reload`，再用指定 QQ 在目标群发 `/sudo list`，检查在线人数和名字的回显。普通命令回执表示 Bukkit 的命令调用已返回，部分命令的详情会输出到服务器控制台。Minecraft 原版白名单独立于本项目的 QQ 绑定准入。
 
 每次提交一条纯文本命令。在机器人发出结果前，新的请求会收到忙碌提示。等待满 30 秒会回复「执行超时，结果未知」，已经开始的指令仍可能完成。机器人不会自动重发。Bot 和 FastAPI 日志可按请求编号关联群号、QQ 号、命令和回执。要关闭功能，可把 `MC_SUDO_QQ_IDS` 置空数组并重启 Bot 和 FastAPI，或将插件的 `sudo.enabled` 改为 `false` 后重启游戏服。
 

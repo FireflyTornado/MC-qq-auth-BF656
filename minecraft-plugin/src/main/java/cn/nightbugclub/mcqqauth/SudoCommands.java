@@ -23,11 +23,27 @@ final class SudoCommands {
     }
 
     private final Server server;
-    private final Set<String> allowed;
+    // Reload and dispatch are serialized on the Minecraft main thread.
+    private Set<String> allowed;
+    private boolean dispatching;
 
     SudoCommands(Server server, Set<String> allowed) {
         this.server = server;
         this.allowed = Set.copyOf(allowed);
+    }
+
+    int reloadAllowlist(Path file) throws IOException {
+        try {
+            allowed = readAllowlist(file);
+        } catch (IOException | IllegalArgumentException | SecurityException e) {
+            allowed = Set.of();
+            throw e;
+        }
+        return allowed.size();
+    }
+
+    boolean isDispatching() {
+        return dispatching;
     }
 
     static Set<String> readAllowlist(Path file) throws IOException {
@@ -63,10 +79,15 @@ final class SudoCommands {
         if (server.getCommandAliases().keySet().stream().anyMatch(target::equalsIgnoreCase)) {
             return new Result("rejected");
         }
-        if (!server.dispatchCommand(server.getConsoleSender(), qualified)) {
-            return new Result("error", "服务端未找到该命令。");
+        dispatching = true;
+        try {
+            if (!server.dispatchCommand(server.getConsoleSender(), qualified)) {
+                return new Result("error", "服务端未找到该命令。");
+            }
+            return feedback(qualified);
+        } finally {
+            dispatching = false;
         }
-        return feedback(qualified);
     }
 
     private Result feedback(String dispatched) {

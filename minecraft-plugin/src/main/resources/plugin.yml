@@ -7,8 +7,8 @@ softdepend: [AuthMe]
 
 commands:
   mcqqauth:
-    description: Show MCQQAuth status or manage authorization mode
-    usage: /mcqqauth [mode [observe|enforce [--kick-online]]]
+    description: Show MCQQAuth status, manage authorization mode, or reload the sudo allowlist
+    usage: /mcqqauth [mode [observe|enforce [--kick-online]]|sudo reload]
     permission: mcqqauth.admin
 
 permissions:
