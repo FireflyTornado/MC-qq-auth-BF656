@@ -69,6 +69,27 @@ final class SudoChannel implements AutoCloseable {
         }
     }
 
+    // Accessed under the channel lock after validating the request deadline.
+    static final class RequestHistory {
+        private static final int MAX_RECENT = 1024;
+        private final LinkedHashMap<String, Long> recent = new LinkedHashMap<>();
+        private long blockedUntil;
+
+        String admit(Request request, long now, boolean running) {
+            recent.values().removeIf(deadline -> deadline <= now);
+            if (recent.containsKey(request.id)) {
+                return "rejected";
+            }
+            if (recent.size() >= MAX_RECENT || now < blockedUntil) {
+                // Keep refusing untracked requests until every refused request has expired.
+                blockedUntil = Math.max(blockedUntil, request.deadlineMs);
+                return "busy";
+            }
+            recent.put(request.id, request.deadlineMs);
+            return running ? "busy" : null;
+        }
+    }
+
     private final Settings settings;
     private final SudoCommands commands;
     private final Consumer<Runnable> onMain;
@@ -85,7 +106,7 @@ final class SudoChannel implements AutoCloseable {
     private boolean closed;
     private Connection active;
     private Request running;
-    private final LinkedHashMap<String, Long> recent = new LinkedHashMap<>();
+    private final RequestHistory history = new RequestHistory();
 
     SudoChannel(Settings settings, SudoCommands commands, Consumer<Runnable> onMain, Logger log) {
         this.settings = settings;
@@ -145,17 +166,14 @@ final class SudoChannel implements AutoCloseable {
                 return;
             }
             long now = System.currentTimeMillis();
-            recent.values().removeIf(deadline -> deadline <= now);
             // Reserve a clock-skew margin at execution time so a slow clock cannot start work late.
             if (request.deadlineMs <= now + CLOCK_SKEW_MS || request.deadlineMs - now > TTL_MS + CLOCK_SKEW_MS) {
                 rejection = "expired";
-            } else if (running != null || recent.size() >= 1024) {
-                rejection = "busy";
-            } else if (recent.putIfAbsent(request.id, request.deadlineMs) != null) {
-                rejection = "rejected";
             } else {
-                running = request;
-                rejection = null;
+                rejection = history.admit(request, now, running != null);
+                if (rejection == null) {
+                    running = request;
+                }
             }
         }
         if (rejection != null) {
