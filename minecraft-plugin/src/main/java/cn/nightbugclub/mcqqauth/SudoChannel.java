@@ -99,27 +99,33 @@ final class SudoChannel implements AutoCloseable {
         thread.setDaemon(true);
         return thread;
     });
-    private final HttpClient http = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(5))
-            .proxy(ProxySelector.of(null)).followRedirects(HttpClient.Redirect.NEVER).build();
+    private final HttpClient http;
 
     // Guard the connection and execution slot across both the network and server threads.
     private boolean closed;
     private Connection active;
     private Request running;
+    private boolean executing;
     private final RequestHistory history = new RequestHistory();
 
     SudoChannel(Settings settings, SudoCommands commands, Consumer<Runnable> onMain, Logger log) {
+        this(settings, commands, onMain, log, HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(5))
+                .proxy(ProxySelector.of(null)).followRedirects(HttpClient.Redirect.NEVER).build());
+    }
+
+    SudoChannel(Settings settings, SudoCommands commands, Consumer<Runnable> onMain, Logger log, HttpClient http) {
         this.settings = settings;
         this.commands = commands;
         this.onMain = onMain;
         this.log = log;
+        this.http = http;
     }
 
     void start() {
         timer.scheduleWithFixedDelay(this::maintain, 0, 5, SECONDS);
     }
 
-    private synchronized void maintain() {
+    synchronized void maintain() {
         if (closed) {
             return;
         }
@@ -153,6 +159,9 @@ final class SudoChannel implements AutoCloseable {
             return;
         }
         active = null;
+        if (!executing) {
+            running = null;
+        }
         if (connection.socket != null) {
             connection.socket.abort();
         }
@@ -190,8 +199,12 @@ final class SudoChannel implements AutoCloseable {
     private void execute(Connection source, Request request) {
         boolean canRun;
         synchronized (this) {
-            canRun = active == source && running == request
-                    && System.currentTimeMillis() + CLOCK_SKEW_MS < request.deadlineMs;
+            if (active != source || running != request) {
+                return;
+            }
+            canRun = System.currentTimeMillis() + CLOCK_SKEW_MS < request.deadlineMs;
+            // Claim execution under the same lock used to invalidate queued work on disconnect.
+            executing = canRun;
         }
         SudoCommands.Result result = new SudoCommands.Result("expired");
         try {
@@ -209,6 +222,7 @@ final class SudoChannel implements AutoCloseable {
     private synchronized void finish(Connection source, Request request, SudoCommands.Result result) {
         if (running == request) {
             running = null;
+            executing = false;
             log.info("/sudo #" + request.id + " result=" + result.status());
             reply(source, request, result);
         }
@@ -236,6 +250,9 @@ final class SudoChannel implements AutoCloseable {
     public synchronized void close() {
         closed = true;
         timer.shutdownNow();
+        if (!executing) {
+            running = null;
+        }
         if (active != null) {
             WebSocket socket = active.socket;
             active = null;
