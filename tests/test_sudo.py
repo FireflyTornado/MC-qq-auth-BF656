@@ -72,6 +72,14 @@ class SudoApiTests(unittest.IsolatedAsyncioTestCase):
         outgoing = asyncio.Queue()
         incoming.put_nowait({"type": "websocket.connect"})
 
+        async def receive():
+            message = await incoming.get()
+            if isinstance(message, asyncio.Event):
+                # The handler has returned to receive after processing the preceding frame.
+                message.set()
+                message = await incoming.get()
+            return message
+
         async def send(message):
             outgoing.put_nowait(message)
             if block_send is not None and message["type"] == "websocket.send":
@@ -80,7 +88,7 @@ class SudoApiTests(unittest.IsolatedAsyncioTestCase):
         task = asyncio.create_task(self.app({
             "type": "websocket", "scheme": "ws", "path": SUDO_WS_PATH,
             "headers": [(b"authorization", f"Bearer {token}".encode())], "query_string": b"",
-        }, incoming.get, send))
+        }, receive, send))
         try:
             handshake = await asyncio.wait_for(outgoing.get(), 2)
             yield handshake["type"], incoming, outgoing
@@ -121,8 +129,10 @@ class SudoApiTests(unittest.IsolatedAsyncioTestCase):
             request = json.loads((await asyncio.wait_for(outgoing.get(), 2))["text"])
             self.assertEqual(request["command"], "list")
             self.assertEqual(await self.submit(request_id="b" * 32), (200, {"status": "busy"}))
-            self.result(incoming, "b" * 32)
-            await asyncio.sleep(0)
+            self.result(incoming, "b" * 32, "wrong request output")
+            processed = asyncio.Event()
+            incoming.put_nowait(processed)
+            await asyncio.wait_for(processed.wait(), 2)
             self.assertFalse(first.done())
             self.result(incoming, request["id"])
             self.assertEqual(await first, (200, {"status": "ok", "output": "在线玩家 0/20"}))
