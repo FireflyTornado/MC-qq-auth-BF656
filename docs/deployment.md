@@ -316,6 +316,8 @@ FastAPI 按上面的命令监听回环地址。异地游戏主机接入时，只
 
 ### QQ群管理指令
 
+请勿通过 `/sudo` 发送含密码、令牌或其他凭据的指令。指令参数会出现在群消息中，FastAPI 也会记录完整指令。需要输入凭据时，请直接使用 Minecraft 服务端控制台。
+
 默认关闭。启用时，在 Bot 和 FastAPI 共用的 `bot/.env` 中设置以下变量。群号取现有的 `TARGET_GROUP_ID`，账号名单与 `SUPERUSERS` 独立。
 
 ```dotenv
