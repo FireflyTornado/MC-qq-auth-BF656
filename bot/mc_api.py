@@ -16,6 +16,8 @@ from app_config import (
     target_group_id,
 )
 from database import DB_PATH
+from sudo_api import sudo_router
+from sudo_config import read_sudo_settings
 
 config = load_config()
 API_TOKEN = config_token(config, "MC_API_TOKEN").encode("ascii")
@@ -23,6 +25,11 @@ NOTIFY_TOKEN = config_token(config, "MC_NOTIFY_TOKEN").encode("ascii")
 if secrets.compare_digest(API_TOKEN, NOTIFY_TOKEN):
     raise ConfigError("MC_API_TOKEN 与 MC_NOTIFY_TOKEN 必须使用不同的值")
 TARGET_GROUP_ID = str(target_group_id(config))
+try:
+    sudo_settings = read_sudo_settings(config)
+except ConfigError as exc:
+    logging.getLogger("mc_qq_auth").error("/sudo 已关闭：%s", exc)
+    sudo_settings = None
 del config
 
 MAX_AUTHORIZATION_LENGTH = MAX_TOKEN_LENGTH + 128
@@ -68,6 +75,9 @@ def require_bearer(authorization: list[str] | None, expected_token: bytes) -> No
 
 def require_token(authorization: list[str] | None = Header(default=None)) -> None:
     require_bearer(authorization, API_TOKEN)
+
+
+app.include_router(sudo_router(sudo_settings, TARGET_GROUP_ID, verify_bearer))
 
 
 @app.get("/internal/health")

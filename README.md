@@ -30,6 +30,9 @@ NapCat、Bot 和授权 API 部署在同一台主机，Minecraft 服务端在另�
 | `/帮助` | `/help` | 查看双语指令及权限。 |
 | `/授权对账` | `/reconcile` | 超级用户专用。核对群成员并撤销已离群的绑定。 |
 | `/信息` | `/info` | 超级用户专用。发送 Bot、授权 API 和主机的状态图。 |
+| `/sudo list` | `/sudo list` | 指定 QQ 号专用。执行服务端已开放的单条命令并在群内回显。默认关闭。 |
+
+`/sudo` 一次只受理一条指令，等待执行回执最多 30 秒。允许清单 `sudo-allowlist.txt` 默认留空，由游戏服管理员按命令前缀添加规则。群内所有成员都能看到回显。启用方法见 [QQ群管理指令](docs/deployment.md#qq群管理指令)。
 
 机器人回复、欢迎语、退群及移出通知、状态图标题和标签都可以在 `bot/messages.yml` 中自定义。入群、主动退群和被移出群的通知独立设置，默认关闭，授权与撤权照常执行。状态图左列显示当前 Bot 账号、采集时间、有效绑定数和系统资源，右列显示服务链路。采集时间使用 Bot 服务器的当地时间。默认文案与可用占位符见 [配置模板](bot/messages.example.yml)，创建配置和重启步骤见 [部署说明](docs/deployment.md#机器人文案与群通知)。
 
@@ -56,7 +59,7 @@ TARGET_GROUP_ID=1 MC_API_TOKEN=demo-api-token MC_NOTIFY_TOKEN=demo-notify-token 
 
 另开一个终端运行 `curl --fail http://127.0.0.1:18765/internal/health` 检查进程。需要接入 NapCat、配置 Bot 或编译插件时，按 [部署与构建说明](docs/deployment.md) 操作。
 
-## Minecraft 插件 0.4.1
+## Minecraft 插件 0.5.0
 
 - `OBSERVE` 同步授权名单并记录入服判断。只有成功入服且确认未授权的玩家才会收到可关闭的 QQ 绑定公告。授权服务故障和撤权均允许玩家继续游玩。
 - `ENFORCE` 对新登录执行白名单检查，在服务未就绪时拒绝准入，并按已确认的新名单移出失去授权的在线玩家。

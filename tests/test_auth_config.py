@@ -480,8 +480,8 @@ class ConfigTests(unittest.TestCase):
         for rel in (
             "app_config.py", "bot.py", "binding_service.py", "database.py", "mc_api.py",
             "notify_client.py", "qq_avatar.py", "qq_group.py", "runtime_status.py", "status_image.py",
-            "status_card.svg", "message_config.py",
-            "plugins/qq_bindings.py", "plugins/qq_events.py", "plugins/status_commands.py",
+            "status_card.svg", "message_config.py", "sudo_api.py", "sudo_config.py",
+            "plugins/qq_bindings.py", "plugins/qq_events.py", "plugins/status_commands.py", "plugins/qq_sudo.py",
         ):
             shutil.copyfile(BOT_DIR / rel, project / rel)
         onebot_token = "76543210123456"
@@ -515,14 +515,16 @@ assert mc_api.TARGET_GROUP_ID == "98765"
 adapter = nonebot.get_adapter(Adapter)
 assert adapter.onebot_config.onebot_access_token == os.environ["ONEBOT_ACCESS_TOKEN"]
 assert {plugin.module_name for plugin in nonebot.get_loaded_plugins()} == {
-    "plugins.qq_bindings", "plugins.qq_events", "plugins.status_commands",
+    "plugins.qq_bindings", "plugins.qq_events", "plugins.status_commands", "plugins.qq_sudo",
 }
+assert mc_api.sudo_settings is None
 """
         env = {
             key: value for key, value in os.environ.items()
             if key.upper() not in {
                 *ENV, "DRIVER", "LOG_LEVEL", "ENVIRONMENT", "ONEBOT_ACCESS_TOKEN",
                 "ONEBOT_V11_ACCESS_TOKEN", "ONEBOT_WS_URLS", "ONEBOT_V11_WS_URLS",
+                "MC_SUDO_QQ_IDS", "MC_SUDO_BOT_TOKEN", "MC_SUDO_PLUGIN_TOKEN",
             }
         }
         env.update(TARGET_GROUP_ID="98765", ONEBOT_ACCESS_TOKEN=onebot_token, PYTHONUTF8="1")

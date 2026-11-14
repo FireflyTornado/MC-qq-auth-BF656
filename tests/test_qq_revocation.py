@@ -14,7 +14,7 @@ from unittest.mock import AsyncMock, call, patch
 import nonebot
 from PIL import Image
 from nonebot.adapters.onebot.v11 import (
-    Adapter, Bot, GroupDecreaseNoticeEvent, GroupIncreaseNoticeEvent, GroupMessageEvent, Message,
+    Adapter, Bot, GroupDecreaseNoticeEvent, GroupIncreaseNoticeEvent, GroupMessageEvent, Message, MessageSegment,
 )
 from nonebot.adapters.onebot.v11.exception import ActionFailed
 from nonebot.rule import TrieRule
@@ -25,6 +25,7 @@ import binding_service
 import database
 import message_config
 import runtime_status
+from sudo_config import SudoSettings
 
 GROUP = 101
 OTHER_GROUP = 102
@@ -62,6 +63,7 @@ class QQRevocationTests(unittest.IsolatedAsyncioTestCase):
         cls.events = importlib.import_module("plugins.qq_events")
         importlib.import_module("plugins.qq_bindings")
         cls.status = importlib.import_module("plugins.status_commands")
+        cls.sudo = importlib.import_module("plugins.qq_sudo")
 
     def setUp(self):
         directory = tempfile.TemporaryDirectory()
@@ -477,10 +479,10 @@ events:
         self.assertIsNone(self.binding())
         self.notify.assert_called_once_with()
 
-    def group_message(self, text, *, user=ABSENT, group=GROUP):
+    def group_message(self, text, *, user=ABSENT, group=GROUP, message_id=1):
         return GroupMessageEvent.model_validate({
             "time": DEPARTED_AT, "self_id": BOT, "post_type": "message", "message_type": "group",
-            "sub_type": "normal", "message_id": 1, "group_id": group, "user_id": user,
+            "sub_type": "normal", "message_id": message_id, "group_id": group, "user_id": user,
             "message": Message(text), "original_message": Message(text), "raw_message": text,
             "font": 0, "sender": {},
         })
@@ -490,6 +492,200 @@ events:
         await self.bot.handle_event(self.group_message(text, **event_fields))
         self.reply.assert_awaited_once()
         return self.reply.call_args.kwargs["message"]
+
+    async def test_sudo_requires_explicit_qq_in_target_group_and_holds_slot_until_reply(self):
+        self.enterContext(patch.object(self.sudo, "settings", SudoSettings(
+            frozenset({str(ABSENT)}), "bot-token", "plugin-token",
+        )))
+        self.enterContext(patch.object(self.sudo, "recent", self.sudo.recent.copy()))
+        submit = self.enterContext(patch.object(
+            self.sudo, "submit", return_value=("ok", "Players:\n[CQ:at,qq=all]\n", False),
+        ))
+        await self.bot.handle_event(self.group_message("/sudo list", user=MEMBER))
+        await self.bot.handle_event(self.group_message("/sudo list", group=OTHER_GROUP))
+        self.reply.assert_not_awaited()
+        submit.assert_not_called()
+
+        usage = await self.command_reply("/sudo list\nsay hi")
+        self.assertIn("用法", Message(usage).extract_plain_text())
+        submit.assert_not_called()
+
+        started_reply = asyncio.Event()
+        finish_reply = asyncio.Event()
+        replies = []
+
+        async def send_reply(*, event, message, **kwargs):
+            replies.append(message)
+            if event.message_id == 2:
+                started_reply.set()
+                await finish_reply.wait()
+
+        self.reply.side_effect = send_reply
+        first = asyncio.create_task(self.bot.handle_event(self.group_message("/sudo list", message_id=2)))
+        try:
+            await asyncio.wait_for(started_reply.wait(), 2)
+            await self.bot.handle_event(self.group_message("/sudo say hello", message_id=3))
+            self.assertIn("正在处理", Message(replies[-1]).extract_plain_text())
+            self.assertEqual(Message(replies[0]), Message(MessageSegment.text("Players:\n[CQ:at,qq=all]\n")))
+        finally:
+            finish_reply.set()
+            await asyncio.wait_for(first, 2)
+        await self.bot.handle_event(self.group_message("/sudo list", message_id=2))
+        await self.bot.handle_event(self.group_message("/sudo say hello", message_id=3))
+        submit.assert_called_once()
+        self.assertEqual(len(replies), 2)
+        token, payload = submit.call_args.args
+        self.assertEqual((token, payload["group_id"], payload["qq_id"], payload["command"]),
+                         ("bot-token", str(GROUP), str(ABSENT), "list"))
+        await self.bot.handle_event(self.group_message("/sudo say hello", message_id=4))
+        self.assertEqual(submit.call_count, 2)
+
+    async def test_sudo_full_replay_cache_does_not_evict_or_later_execute_rejected_messages(self):
+        self.enterContext(patch.object(self.sudo, "settings", SudoSettings(
+            frozenset({str(ABSENT)}), "bot-token", "plugin-token",
+        )))
+        self.enterContext(patch.object(self.sudo, "recent", self.sudo.recent.copy()))
+        self.enterContext(patch.object(self.sudo, "MAX_RECENT", 1))
+        self.enterContext(patch.object(self.sudo, "replay_cache_blocked_until", 0.0))
+        clock = self.enterContext(patch.object(self.sudo, "time", wraps=self.sudo.time))
+        clock.monotonic.return_value = 100.0
+        with patch.object(self.sudo, "submit", return_value=("ok", "", False)) as submit:
+            await self.command_reply("/sudo list", message_id=50)
+            clock.monotonic.return_value = 120.0
+            reply = await self.command_reply("/sudo say hello", message_id=51)
+            self.assertIn("指令请求过多", Message(reply).extract_plain_text())
+            self.reply.reset_mock()
+            await self.bot.handle_event(self.group_message("/sudo list", message_id=50))
+            self.reply.assert_not_awaited()
+
+            # The admitted ID has expired, but the untracked rejection is still within its window.
+            clock.monotonic.return_value = 410.0
+            reply = await self.command_reply("/sudo say hello", message_id=51)
+            self.assertIn("指令请求过多", Message(reply).extract_plain_text())
+            submit.assert_called_once()
+
+            clock.monotonic.return_value = 710.0
+            await self.command_reply("/sudo say hello", message_id=52)
+            self.assertEqual(submit.call_count, 2)
+
+    async def test_sudo_uncertain_response_holds_slot_until_timeout_without_retry(self):
+        self.enterContext(patch.object(self.sudo, "settings", SudoSettings(
+            frozenset({str(ABSENT)}), "bot-token", "plugin-token",
+        )))
+        self.enterContext(patch.object(self.sudo, "recent", self.sudo.recent.copy()))
+        waiting = asyncio.Event()
+        loop = asyncio.get_running_loop()
+        deadline = asyncio.timeout(self.sudo.SUDO_TIMEOUT)
+
+        async def wait_for_deadline(delay):
+            self.assertGreater(delay, 0)
+            waiting.set()
+            await loop.create_future()
+
+        with patch.object(self.sudo, "asyncio", wraps=asyncio) as command_asyncio, patch.object(
+            self.sudo, "submit", side_effect=[("unknown", "", False), ("ok", "online", False)],
+        ) as submit:
+            command_asyncio.timeout.side_effect = [deadline, asyncio.timeout(self.sudo.SUDO_TIMEOUT)]
+            command_asyncio.sleep.side_effect = wait_for_deadline
+            first = asyncio.create_task(self.bot.handle_event(self.group_message("/sudo list", message_id=42)))
+            wait_started = asyncio.create_task(waiting.wait())
+            try:
+                done, _ = await asyncio.wait((first, wait_started), timeout=5, return_when=asyncio.FIRST_COMPLETED)
+                self.assertIn(wait_started, done, "The first request must wait after receiving unknown")
+                self.assertFalse(first.done())
+                self.reply.assert_not_awaited()
+
+                reply = await self.command_reply("/sudo list", message_id=49)
+                self.assertEqual(Message(reply).extract_plain_text(), "有指令正在处理，请稍后重试。")
+                submit.assert_awaited_once()
+
+                self.reply.reset_mock()
+                deadline.reschedule(loop.time())
+                await asyncio.wait_for(first, 2)
+                self.reply.assert_awaited_once()
+                reply = self.reply.call_args.kwargs["message"]
+                self.assertEqual(Message(reply).extract_plain_text(), "执行超时，结果未知。")
+                submit.assert_awaited_once()
+
+                retry = await self.command_reply("/sudo list", message_id=50)
+                self.assertEqual(Message(retry).extract_plain_text(), "online")
+                self.assertEqual(submit.await_count, 2)
+            finally:
+                for task in (first, wait_started):
+                    if not task.done():
+                        task.cancel()
+                await asyncio.gather(first, wait_started, return_exceptions=True)
+
+    async def test_sudo_closes_slow_http_reply_at_total_deadline(self):
+        self.enterContext(patch.object(self.sudo, "settings", SudoSettings(
+            frozenset({str(ABSENT)}), "bot-token", "plugin-token",
+        )))
+        self.enterContext(patch.object(self.sudo, "recent", self.sudo.recent.copy()))
+        self.enterContext(patch.object(self.sudo, "SUDO_TIMEOUT", 0.5))
+        reply_started = asyncio.Event()
+        disconnected = asyncio.Event()
+
+        async def slow_reply(reader, writer):
+            try:
+                await reader.readuntil(b"\r\n\r\n")
+                await reader.readuntil(b"}")
+                writer.write(b"HTTP/1.1 200 OK\r\nContent-Length: 10000\r\n\r\n{")
+                await writer.drain()
+                reply_started.set()
+                while not reader.at_eof():
+                    writer.write(b" ")
+                    await writer.drain()
+                    await asyncio.sleep(0.02)
+            except (ConnectionError, asyncio.IncompleteReadError):
+                pass
+            finally:
+                writer.close()
+                disconnected.set()
+
+        async with await asyncio.start_server(slow_reply, "127.0.0.1", 0) as server:
+            self.enterContext(patch.object(self.sudo, "HEALTH_PORT", server.sockets[0].getsockname()[1]))
+            reply = await self.command_reply("/sudo list", message_id=48)
+            self.assertTrue(reply_started.is_set())
+            self.assertEqual(Message(reply).extract_plain_text(), "执行超时，结果未知。")
+            await asyncio.wait_for(disconnected.wait(), 1)
+
+    async def test_sudo_returns_raw_error_and_reports_empty_feedback(self):
+        self.enterContext(patch.object(self.sudo, "settings", SudoSettings(
+            frozenset({str(ABSENT)}), "bot-token", "plugin-token",
+        )))
+        self.enterContext(patch.object(self.sudo, "recent", self.sudo.recent.copy()))
+        error = "Incorrect argument\nlist bad<--[HERE]\n"
+        with patch.object(self.sudo, "submit", side_effect=[
+            ("error", error, False), ("ok", "", False), ("disconnected", "", False),
+        ]):
+            self.assertEqual(Message(await self.command_reply("/sudo list bad", message_id=43)).extract_plain_text(),
+                             error)
+            self.assertEqual(Message(await self.command_reply("/sudo list", message_id=44)).extract_plain_text(),
+                             "命令已返回，服务端无输出。")
+            self.assertEqual(Message(await self.command_reply("/sudo list", message_id=47)).extract_plain_text(),
+                             "指令通道已断开，执行结果未知。")
+
+    async def test_sudo_uploads_exact_utf8_and_reports_unconfirmed_upload(self):
+        self.enterContext(patch.object(self.sudo, "settings", SudoSettings(
+            frozenset({str(ABSENT)}), "bot-token", "plugin-token",
+        )))
+        self.enterContext(patch.object(self.sudo, "recent", self.sudo.recent.copy()))
+        self.enterContext(patch.object(self.sudo, "output_settings", self.sudo.SudoOutputSettings()))
+        output = "服务器反馈\r\n" * 11
+        with patch.object(self.sudo, "submit", return_value=("error", output, False)) as submit, patch.object(
+            self.bot, "call_api", AsyncMock(side_effect=[{"file_id": "uploaded"}, {"file_id": None}]),
+        ) as api:
+            await self.bot.handle_event(self.group_message("/sudo list", message_id=45))
+            self.reply.assert_not_awaited()
+            request_id = submit.call_args.args[1]["id"]
+            api.assert_awaited_once_with(
+                "upload_group_file", group_id=str(GROUP), name=f"sudo-{request_id}.txt",
+                file="base64://" + base64.b64encode(output.encode("utf-8")).decode("ascii"),
+            )
+            reply = await self.command_reply("/sudo list", message_id=46)
+            self.assertIn(submit.call_args.args[1]["id"], Message(reply).extract_plain_text())
+            self.assertIn("上传失败或未确认", Message(reply).extract_plain_text())
+            self.assertEqual(api.await_count, 2)
 
     async def test_bilingual_binding_commands_share_behavior(self):
         replies = []

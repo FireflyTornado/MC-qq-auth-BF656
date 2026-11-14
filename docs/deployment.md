@@ -314,6 +314,51 @@ FastAPI 按上面的命令监听回环地址。异地游戏主机接入时，只
 
 `/internal/mc/notify` 应从公网路由中排除，`/internal/health` 留给本机或受信探活。WebUI 和 OneBot 端口同样保留在回环地址。完整协议见 [API 文档](api.md)。
 
+### QQ群管理指令
+
+请勿通过 `/sudo` 发送含密码、令牌或其他凭据的指令。指令参数会出现在群消息中，FastAPI 也会记录完整指令。需要输入凭据时，请直接使用 Minecraft 服务端控制台。
+
+默认关闭。启用时，在 Bot 和 FastAPI 共用的 `bot/.env` 中设置以下变量。群号取现有的 `TARGET_GROUP_ID`，账号名单与 `SUPERUSERS` 独立。
+
+```dotenv
+MC_SUDO_QQ_IDS=["123456789"]
+MC_SUDO_BOT_TOKEN=REPLACE_WITH_MC_SUDO_BOT_TOKEN
+MC_SUDO_PLUGIN_TOKEN=REPLACE_WITH_MC_SUDO_PLUGIN_TOKEN
+```
+
+把两个 Token 分别替换为独立的随机值，并与授权、通知和 OneBot 的凭据区分。Bot 通过固定的回环地址 `127.0.0.1:18765` 提交指令。反代只为游戏主机增加 `/internal/mc/sudo/ws` 的 WSS 路由，转发 Upgrade 和 Authorization 头，尽可能限制到游戏主机的来源地址。将 `/internal/mc/sudo/submit` 留在回环地址。FastAPI 继续使用单 worker，两个主机应同步时钟，时差控制在一秒内。
+
+更新插件 JAR，在 Minecraft 插件的 `config.yml` 中加入以下设置。仅填写插件专用的 `MC_SUDO_PLUGIN_TOKEN` 值。
+
+```yaml
+sudo:
+  enabled: true
+  websocket-url: "wss://auth.example.org/internal/mc/sudo/ws"
+  token: "REPLACE_WITH_MC_SUDO_PLUGIN_TOKEN"
+```
+
+插件首次启动时会在 `config.yml` 同目录创建 `sudo-allowlist.txt`。文件默认没有允许规则。用 UTF-8 编辑，每行一个命令前缀，省略开头的 `/`。空行和以 `#` 开头的行会被跳过。若曾配置 `sudo.allowed-commands`，请手动把仍需开放的条目移入新清单。
+
+保存清单后，在 Minecraft 服务端控制台执行 `mcqqauth sudo reload`。插件校验整份清单后立即替换规则，并报告加载条数。留空清单会加载零条规则。文件无法读取或格式无效时，插件清空生效规则并暂停群内 `/sudo`。修正文件后再次执行同一条指令即可恢复。此操作只读取清单，无需重启游戏服、Bot 或 FastAPI。
+
+前缀按大小写和空格边界匹配。写入 `whitelist` 即开放整个原版白名单命令，包括 `whitelist off`。只写 `whitelist add` 则允许 `/sudo whitelist add Steve`，并拒绝 `whitelist remove Steve` 和 `whitelist addall Steve`。匹配后，参数交由 Minecraft 校验。无命名空间的指令使用 `minecraft:`。插件指令需要在清单和群消息里都写完整命名空间，例如 `example:inspect`。
+
+启用并重启 Bot、FastAPI 和 Minecraft 服务端后，可以在清单中加入 `list`，在控制台执行 `mcqqauth sudo reload`，再用指定 QQ 在目标群发 `/sudo list`，检查在线人数和名字的回显。也可以用 `/sudo list invalid-argument` 检查语法错误的回显。Minecraft 原版白名单独立于本项目的 QQ 绑定准入。
+
+Mohist 1.20.1 下，插件为每条命令创建独立的远程控制台反馈缓冲，无需开启 RCON 监听端口。服务端发给执行者的成功或错误反馈会以纯文本或 UTF-8 TXT 群文件发出。纯文本会过滤部分控制字符，文件保留原始换行。执行返回后缓冲为空时会提示「命令已返回，服务端无输出」。全局日志和命令返回后的异步输出留在服务端。需要实际服务端控制台身份的指令仍须在控制台运行。当前实现依赖 Mohist 1.20.1 的反馈接口，接口不可用时会拒绝执行并回报原因。
+
+可在 `bot/.env` 中调整输出发送方式。超过任一阈值就转为 TXT，恰好等于阈值时仍可直接发文本。
+
+| 配置 | 默认 | 判断方式 |
+| --- | --- | --- |
+| `MC_SUDO_FILE_LINE_THRESHOLD` | `10` | 输出行数，末尾单个换行不会新增一行。最小值为 1。 |
+| `MC_SUDO_FILE_LINE_CHAR_THRESHOLD` | `0` | 任意一行的字符数，0 表示关闭该判断。 |
+| `MC_SUDO_TEXT_MAX_CHARS` | `1500` | 单条文本的总字符数，包含换行。最小值为 1。 |
+
+TXT 通过 NapCat 的 `upload_group_file` 发送到群内。文件上传另有 20 秒等待时间，期间 Bot 仍占用指令处理名额。上传失败或未获确认时，Bot 在群内提示并附请求编号。插件在接收命令反馈时限制累积大小。超过 64 KiB 时，保留由完整字符组成的原文前缀，并在文件末尾标注截断，标注也计入 64 KiB。编码后的回执另有 512 KiB 上限。首次部署此功能需要更新 Bot、FastAPI 和游戏服插件，之后修改这三个阈值只需重启 Bot。
+
+每次提交一条纯文本命令。在机器人发出结果前，新的请求会收到忙碌提示。Bot 在同一进程内保留消息 ID 5 分钟，忙碌时拒绝的指令也会登记，以忽略 OneBot 重投。去重缓存满时，Bot 暂停接收新指令，最后一次因容量拒绝的消息再过 5 分钟才恢复接收。等待满 30 秒会回复「执行超时，结果未知」。若 API 先检测到插件连接断开且仍在等回执，Bot 会立即回复「指令通道已断开，执行结果未知」，回复后释放名额。两种情况下，已经开始的指令仍可能完成，机器人不会自动重发。Bot 和 FastAPI 日志可按请求编号关联群号、QQ 号、命令和回执。要关闭功能，可把 `MC_SUDO_QQ_IDS` 置空数组并重启 Bot 和 FastAPI，或将插件的 `sudo.enabled` 改为 `false` 后重启游戏服。
+
 ## 本地测试和锁文件维护
 
 开发环境按同一条 `pip install -r requirements.txt` 命令安装依赖。测试使用标准库 `unittest`、`sqlite3` 和临时文件，HTTP/WebSocket 测试直接调用 ASGI 应用。当前无需单独的开发锁、TestClient、httpx 或 pytest。
@@ -342,11 +387,9 @@ cd minecraft-plugin
 mvn -B -ntp clean verify
 ```
 
-部署产物为 `minecraft-plugin/target/MCQQAuth-0.4.1.jar`。Spigot API 1.20.1 以 `provided` 作用域参与编译，由兼容的服务端提供。JAR 内置并隔离 Jetty、Gson 及所需的日志依赖。Maven 测试通过本机回环地址运行模拟 HTTPS/WSS 服务并生成临时证书，也会模拟 Bukkit 登录、入服、公告界面和踢出调度。
+部署产物为 `minecraft-plugin/target/MCQQAuth-0.5.0.jar`。Spigot API 1.20.1 以 `provided` 作用域参与编译，由兼容的服务端提供。JAR 内置并隔离 Jetty、Gson 及所需的日志依赖。Maven 测试通过本机回环地址运行模拟 HTTPS/WSS 服务并生成临时证书，也会模拟 Bukkit 登录、入服、公告界面和踢出调度。
 
-0.4.1 可直接沿用 0.4.0 或 0.3.2 的配置。服务端主动发送 Ping 时，插件继续正常响应 Pong。游戏名支持 1–16 位，授权匹配忽略大小写。
-
-从要求游戏名为 3–16 位的版本升级时，先替换游戏服上的插件 JAR 并重启，再更新 Bot，避免旧插件收到短名后拒绝整份授权名单。若已有超过 16 位的绑定，升级前先处理这些记录。数据库校验会拒绝含有超长记录的库，插件也会拒绝含有超长名字的整份授权名单。无需迁移表结构。
+游戏名现支持 1–16 位，授权匹配忽略大小写。从要求游戏名为 3–16 位的版本升级时，先替换游戏服上的插件 JAR 并重启，再更新 Bot，避免旧插件收到短名后拒绝整份授权名单。若已有超过 16 位的绑定，升级前先处理这些记录。数据库校验会拒绝含有超长记录的库，插件也会拒绝含有超长名字的整份授权名单。无需迁移表结构。
 
 Spigot API 使用 `1.20.1-R0.1-SNAPSHOT`，本次解析到 `1.20.1-R0.1-20230921.163938-66`。仓库可更新或清理快照，JAR 打包时间也会影响文件字节。若发布需要逐字节复现，应固定已验证的快照构件及其校验值、构建工具和归档时间，并在独立环境中重建比对。
 
@@ -425,7 +468,7 @@ Bukkit 只能在玩家成功进入游戏后打开背包界面。名单未就绪�
 ### Mohist 面板服维护窗口
 
 1. 使用 Java 17 和 Mohist 1.20.1 的独立测试服，配置隔离的 HTTPS/WSS 模拟授权端点、测试 Token 和测试游戏名。构建 JAR，备份待升级服的旧插件与配置。
-2. 停服后将 `plugins/` 中的旧版替换为 `MCQQAuth-0.4.1.jar`，只保留一个 MCQQAuth JAR。保留已有 API 地址、Token 和文件访问权限。首次安装可从 JAR 提取默认配置，填写两条授权端点和 Token。
+2. 停服后将 `plugins/` 中的旧版替换为 `MCQQAuth-0.5.0.jar`，只保留一个 MCQQAuth JAR。保留已有 API 地址、Token 和文件访问权限。首次安装可从 JAR 提取默认配置，填写两条授权端点和 Token。
 3. **阶段 A · 观察**。显式配置 `mode: OBSERVE` 与 `observe.notice.enabled: true`，填写 QQ 群号并启动游戏服。用 `/mcqqauth` 确认模式和同步状态。用已授权、未授权、同步暂不可用三种测试状态入服，核对公告、日志及同步恢复后的表现。检查原版客户端的中文文案、Esc、确认按钮、背包操作和其他插件的登录菜单。
 4. **阶段 B · 强制**。保留已授权和未授权的测试玩家在线，执行 `/mcqqauth mode enforce`。验证新登录、在线豁免、退出重连和撤权。用隔离的测试名单演练显式清理，核对踢出人数和日志。在 WSS 断开时核对清理被拒、新登录被拒及重连后的恢复。确认切换本身未产生新连接，再重启测试服核对模式保存结果。
-5. 生产环境先按观察阶段核对同步和公告，再用指令切换。修改公告等其他配置后，在维护窗口完整停止并重新启动 Mohist。完整回滚时停服，移出 `MCQQAuth-0.4.1.jar`，恢复同一次备份的旧 JAR 与配置，再启动并核对 `/mcqqauth`。
+5. 生产环境先按观察阶段核对同步和公告，再用指令切换。修改公告等其他配置后，在维护窗口完整停止并重新启动 Mohist。完整回滚时停服，移出 `MCQQAuth-0.5.0.jar`，恢复同一次备份的旧 JAR 与配置，再启动并核对 `/mcqqauth`。

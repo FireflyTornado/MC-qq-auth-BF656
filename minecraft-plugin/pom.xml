@@ -9,7 +9,7 @@
 
     <groupId>cn.nightbugclub</groupId>
     <artifactId>MCQQAuth</artifactId>
-    <version>0.4.1</version>
+    <version>0.5.0</version>
     <packaging>jar</packaging>
 
     <name>MCQQAuth</name>
@@ -44,6 +44,11 @@
             <groupId>com.google.code.gson</groupId>
             <artifactId>gson</artifactId>
             <version>2.13.2</version>
+        </dependency>
+        <dependency>
+            <groupId>org.ow2.asm</groupId>
+            <artifactId>asm</artifactId>
+            <version>9.8</version>
         </dependency>
         <dependency>
             <groupId>org.slf4j</groupId>
@@ -106,6 +111,10 @@
                                 <relocation>
                                     <pattern>com.google.gson</pattern>
                                     <shadedPattern>cn.nightbugclub.mcqqauth.lib.gson</shadedPattern>
+                                </relocation>
+                                <relocation>
+                                    <pattern>org.objectweb.asm</pattern>
+                                    <shadedPattern>cn.nightbugclub.mcqqauth.lib.asm</shadedPattern>
                                 </relocation>
                                 <relocation>
                                     <pattern>org.slf4j</pattern>

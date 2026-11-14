@@ -5,6 +5,7 @@ import cn.nightbugclub.mcqqauth.PluginSettings.Mode;
 import org.bukkit.Server;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandSender;
+import org.bukkit.command.ConsoleCommandSender;
 import org.bukkit.configuration.InvalidConfigurationException;
 import org.bukkit.configuration.file.YamlConfiguration;
 import org.bukkit.plugin.IllegalPluginAccessException;
@@ -15,12 +16,16 @@ import org.yaml.snakeyaml.error.YAMLException;
 import java.io.IOException;
 import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.FileAlreadyExistsException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Set;
 
 public final class MCQQAuthPlugin extends JavaPlugin {
 
     private volatile AuthorizationService authorization;
+    private SudoChannel sudoChannel;
+    private SudoCommands sudoCommands;
     private AuthorizationModeController modes;
     private AuthorizationListener listener;
     private ObserveNotice observeNotice;
@@ -80,6 +85,50 @@ public final class MCQQAuthPlugin extends JavaPlugin {
                     }
                 }));
         authorization.start();
+        startSudo(config, settings.token);
+    }
+
+    private void startSudo(YamlConfiguration config, String authToken) {
+        try {
+            createSudoAllowlist();
+        } catch (IOException | SecurityException e) {
+            getLogger().warning("无法创建 " + SudoCommands.ALLOWLIST_FILE + "，请检查插件目录权限。");
+        }
+        try {
+            SudoChannel.Settings sudo = SudoChannel.Settings.read(config, authToken);
+            if (sudo != null) {
+                Server server = getServer();
+                sudoCommands = new SudoCommands(server, Set.of());
+                try {
+                    sudoCommands.reloadAllowlist(sudoAllowlistFile());
+                } catch (IOException | SecurityException | IllegalArgumentException e) {
+                    getLogger().warning(sudoReloadFailure(e));
+                }
+                sudoChannel = new SudoChannel(sudo, sudoCommands,
+                        task -> server.getScheduler().runTask(this, task), getLogger());
+                sudoChannel.start();
+            }
+        } catch (IllegalArgumentException e) {
+            getLogger().warning("/sudo 已关闭：" + e.getMessage());
+        }
+    }
+
+    private Path sudoAllowlistFile() {
+        return getDataFolder().toPath().resolve(SudoCommands.ALLOWLIST_FILE);
+    }
+
+    private void createSudoAllowlist() throws IOException {
+        Path allowlist = sudoAllowlistFile();
+        if (Files.notExists(allowlist)) {
+            try (var template = MCQQAuthPlugin.class.getResourceAsStream("/" + SudoCommands.ALLOWLIST_FILE)) {
+                if (template == null) {
+                    throw new IOException("Missing sudo allowlist template");
+                }
+                Files.copy(template, allowlist);
+            } catch (FileAlreadyExistsException ignored) {
+                // The administrator created the file while the plugin was starting.
+            }
+        }
     }
 
     private YamlConfiguration readConfig() throws IOException, InvalidConfigurationException {
@@ -92,6 +141,11 @@ public final class MCQQAuthPlugin extends JavaPlugin {
 
     @Override
     public void onDisable() {
+        sudoCommands = null;
+        if (sudoChannel != null) {
+            sudoChannel.close();
+            sudoChannel = null;
+        }
         if (modes != null) {
             modes.close();
             listener.clearExemptions();
@@ -134,6 +188,18 @@ public final class MCQQAuthPlugin extends JavaPlugin {
         }
         if (!sender.hasPermission("mcqqauth.admin")) {
             sender.sendMessage("[MCQQAuth] 你没有执行此指令的权限。");
+            return true;
+        }
+        if (args.length > 0 && args[0].equalsIgnoreCase("sudo")) {
+            if (!(sender instanceof ConsoleCommandSender) || sender != getServer().getConsoleSender()) {
+                sender.sendMessage("[MCQQAuth] 此指令仅限 Minecraft 服务端控制台使用。");
+            } else if (args.length != 2 || !args[1].equalsIgnoreCase("reload")) {
+                sender.sendMessage("[MCQQAuth] 用法：mcqqauth sudo reload");
+            } else if (getServer().isPrimaryThread()) {
+                reloadSudo(sender);
+            } else {
+                scheduleOnMainThread(() -> reloadSudo(sender));
+            }
             return true;
         }
         Mode mode = modes.mode();
@@ -181,6 +247,31 @@ public final class MCQQAuthPlugin extends JavaPlugin {
         }
         sender.sendMessage("[MCQQAuth] 用法：/mcqqauth mode [observe|enforce [--kick-online]]");
         return true;
+    }
+
+    private void reloadSudo(CommandSender sender) {
+        SudoCommands commands = sudoCommands;
+        if (commands == null) {
+            sender.sendMessage("[MCQQAuth] /sudo 功能未启用，请检查插件配置。");
+            return;
+        }
+        // QQ commands also use the Bukkit console sender. Deny reloads routed through that dispatch.
+        if (commands.isDispatching()) {
+            sender.sendMessage("[MCQQAuth] 此指令仅限 Minecraft 服务端控制台使用。");
+            return;
+        }
+        try {
+            int count = commands.reloadAllowlist(sudoAllowlistFile());
+            sender.sendMessage("[MCQQAuth] /sudo 允许清单已重载，共 " + count + " 条规则。");
+        } catch (IOException | SecurityException | IllegalArgumentException e) {
+            sender.sendMessage("[MCQQAuth] " + sudoReloadFailure(e));
+        }
+    }
+
+    private static String sudoReloadFailure(Exception failure) {
+        String detail = failure instanceof IllegalArgumentException
+                ? failure.getMessage() : "无法读取 " + SudoCommands.ALLOWLIST_FILE + "，请检查文件路径、权限和 UTF-8 编码。";
+        return "/sudo 已暂停。清单加载失败：" + detail + " 修正后请在控制台执行 mcqqauth sudo reload。";
     }
 
     private void changeMode(CommandSender sender, Mode requested, boolean kick) {

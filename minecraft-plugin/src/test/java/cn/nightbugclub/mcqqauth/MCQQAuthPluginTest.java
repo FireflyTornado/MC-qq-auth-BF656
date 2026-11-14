@@ -5,6 +5,7 @@ import org.bukkit.command.Command;
 import org.bukkit.command.CommandSender;
 import org.bukkit.command.ConsoleCommandSender;
 import org.bukkit.command.PluginCommandYamlParser;
+import org.bukkit.command.RemoteConsoleCommandSender;
 import org.bukkit.entity.Player;
 import org.bukkit.event.player.AsyncPlayerPreLoginEvent;
 import org.bukkit.plugin.PluginDescriptionFile;
@@ -73,13 +74,91 @@ class MCQQAuthPluginTest {
     }
 
     @Test
+    void sudoAllowlistIsCreatedEmptyAndExistingRulesArePreserved() throws Exception {
+        Path allowlist = dataFolder.resolve(SudoCommands.ALLOWLIST_FILE);
+        start("mode: OBSERVE\n" + TEST_API);
+        assertEquals(Set.of(), SudoCommands.readAllowlist(allowlist));
+        plugin.onDisable();
+        Files.writeString(allowlist, "whitelist add\n");
+        start("mode: OBSERVE\n" + TEST_API);
+        assertEquals(Set.of("whitelist add"), SudoCommands.readAllowlist(allowlist));
+    }
+
+    @Test
+    void sudoReloadChecksConsoleAndReplacesRulesOrPausesUntilFixed() throws Exception {
+        var commands = new ArrayDeque<SudoCommands>();
+        RemoteConsoleCommandSender remote = admin(RemoteConsoleCommandSender.class);
+        try (var feedback = mockConstruction(MohistCommandFeedback.class, (capture, context) ->
+                    when(capture.open()).thenReturn(new MohistCommandFeedback.Capture(
+                            remote, new BoundedCommandOutput()::snapshot)));
+             var channels = mockConstruction(SudoChannel.class,
+                (channel, context) -> commands.add((SudoCommands) context.arguments().get(1)))) {
+            Path allowlist = dataFolder.resolve(SudoCommands.ALLOWLIST_FILE);
+            Files.writeString(allowlist, "say\nmcqqauth:mcqqauth\n");
+            start("mode: OBSERVE\n" + TEST_API + """
+                    sudo:
+                      enabled: true
+                      token: test-sudo-token
+                      websocket-url: wss://localhost:1/internal/mc/sudo/ws
+                    """);
+            SudoCommands live = commands.remove();
+            ConsoleCommandSender console = admin(ConsoleCommandSender.class);
+            when(server.getConsoleSender()).thenReturn(console);
+            when(server.dispatchCommand(remote, "minecraft:say hi")).thenReturn(true);
+            when(server.dispatchCommand(remote, "minecraft:whitelist on")).thenReturn(true);
+            when(server.dispatchCommand(remote, "mcqqauth:mcqqauth sudo reload")).thenAnswer(call -> {
+                execute(console, "sudo", "reload");
+                return true;
+            });
+
+            Files.writeString(allowlist, "whitelist\n");
+            Player player = admin(Player.class);
+            execute(player, "sudo", "reload");
+            execute(remote, "sudo", "reload");
+            verify(player).sendMessage(contains("仅限 Minecraft 服务端控制台"));
+            verify(remote).sendMessage(contains("仅限 Minecraft 服务端控制台"));
+            live.execute("mcqqauth:mcqqauth sudo reload");
+            verify(console).sendMessage(contains("仅限 Minecraft 服务端控制台"));
+            assertEquals("ok", live.execute("say hi").status());
+            assertEquals("rejected", live.execute("whitelist on").status());
+
+            execute(console, "sudo", "reload");
+            verify(console).sendMessage(contains("共 1 条规则"));
+            assertEquals("rejected", live.execute("say hi").status());
+            assertEquals("ok", live.execute("whitelist on").status());
+
+            Files.writeString(allowlist, "say\n/invalid\n");
+            execute(console, "sudo", "reload");
+            verify(console).sendMessage(contains("第 2 行"));
+            assertEquals("rejected", live.execute("whitelist on").status());
+            assertEquals("rejected", live.execute("say hi").status());
+            Files.delete(allowlist);
+            execute(console, "sudo", "reload");
+            verify(console).sendMessage(contains("无法读取"));
+            assertFalse(Files.exists(allowlist));
+
+            Files.writeString(allowlist, "say\nwhitelist\n");
+            execute(console, "sudo", "reload");
+            verify(console).sendMessage(contains("共 2 条规则"));
+            assertEquals("ok", live.execute("say hi").status());
+            Files.writeString(allowlist, "# no commands\n");
+            execute(console, "sudo", "reload");
+            verify(console).sendMessage(contains("共 0 条规则"));
+            assertEquals("rejected", live.execute("say hi").status());
+            assertEquals(1, channels.constructed().size());
+            verify(channels.constructed().get(0), never()).close();
+            plugin.onDisable();
+        }
+    }
+
+    @Test
     void bothListenersRegisterOnceAndObserveReportsOfflineBehavior() throws Exception {
         start("mode: OBSERVE");
         verify(plugins).registerEvents(isA(ObserveNotice.class), eq(plugin));
         verify(plugins).registerEvents(isA(AuthorizationListener.class), eq(plugin));
         CommandSender admin = admin(CommandSender.class);
         execute(admin);
-        verify(admin).sendMessage("MCQQAuth v0.4.1");
+        verify(admin).sendMessage("MCQQAuth v0.5.0");
         verify(admin).sendMessage("当前模式：OBSERVE");
         verify(admin).sendMessage("授权服务：未就绪");
         verify(admin).sendMessage("当前行为：允许正常登录，仅观察");
