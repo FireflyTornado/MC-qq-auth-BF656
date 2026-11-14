@@ -11,7 +11,28 @@ from fastapi import FastAPI
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "bot"))
 
 from sudo_api import sudo_router
-from sudo_config import SUDO_SUBMIT_PATH, SUDO_WS_PATH, SudoSettings, is_single_command
+from app_config import ConfigError
+from sudo_config import MAX_RESULT_BYTES, SUDO_SUBMIT_PATH, SUDO_WS_PATH, SudoSettings, is_single_command, read_sudo_output_settings
+
+
+class SudoOutputSettingsTests(unittest.TestCase):
+    def test_threshold_boundaries_and_config(self):
+        defaults = read_sudo_output_settings({})
+        self.assertFalse(defaults.use_file("a\r\n" * 10))
+        self.assertTrue(defaults.use_file("a\r\n" * 11))
+        self.assertFalse(defaults.use_file("字" * 1500))
+        self.assertTrue(defaults.use_file("字" * 1501))
+        custom = read_sudo_output_settings({
+            "MC_SUDO_FILE_LINE_THRESHOLD": "2",
+            "MC_SUDO_FILE_LINE_CHAR_THRESHOLD": "3",
+            "MC_SUDO_TEXT_MAX_CHARS": "8",
+        })
+        self.assertFalse(custom.use_file("甲乙丙\n丁\n"))
+        self.assertTrue(custom.use_file("甲乙丙丁\n"))
+        self.assertTrue(custom.use_file("甲\n乙\n丙\n"))
+        self.assertTrue(custom.use_file("aaa\r\nbbb\n"))
+        with self.assertRaises(ConfigError):
+            read_sudo_output_settings({"MC_SUDO_TEXT_MAX_CHARS": "0"})
 
 
 class SudoApiTests(unittest.IsolatedAsyncioTestCase):
@@ -66,10 +87,18 @@ class SudoApiTests(unittest.IsolatedAsyncioTestCase):
             await asyncio.wait_for(task, 2)
 
     @staticmethod
-    def result(incoming, request_id, text="在线玩家 0/20"):
+    def result(incoming, request_id, text="在线玩家 0/20", **fields):
         incoming.put_nowait({"type": "websocket.receive", "text": json.dumps({
-            "id": request_id, "status": "ok", "output": text,
+            "id": request_id, "status": "ok", "output": text, **fields,
         })})
+
+    async def test_forwards_full_byte_budget_and_truncation_flag(self):
+        output = "\x00" * MAX_RESULT_BYTES  # Worst-case JSON expansion of a UTF-8 byte.
+        async with self.connect() as (_, incoming, outgoing):
+            first = asyncio.create_task(self.submit())
+            request = json.loads((await asyncio.wait_for(outgoing.get(), 2))["text"])
+            self.result(incoming, request["id"], output, truncated=True)
+            self.assertEqual(await first, (200, {"status": "ok", "output": output, "truncated": True}))
 
     async def test_permission_and_single_command_validation(self):
         self.assertEqual((await self.submit(qq_id="102"))[0], 403)

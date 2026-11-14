@@ -1,5 +1,6 @@
 package cn.nightbugclub.mcqqauth;
 
+import com.google.gson.JsonObject;
 import org.bukkit.Server;
 import org.bukkit.command.CommandException;
 import org.bukkit.command.RemoteConsoleCommandSender;
@@ -11,6 +12,7 @@ import org.junit.jupiter.params.provider.ValueSource;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.charset.StandardCharsets;
 import java.util.Map;
 import java.util.Set;
 
@@ -111,6 +113,22 @@ class SudoCommandsTest {
         assertEquals(new SudoCommands.Result("error", "服务端命令反馈接口不可用，指令未执行。"),
                 commands.execute("list"));
         verify(server, never()).dispatchCommand(any(), anyString());
+    }
+
+    @Test
+    void retainsFullUtf8BudgetAndTruncatesOnCharacterBoundaryWithNotice() {
+        var response = new JsonObject();
+        String limit = "😀".repeat(16_384);
+        SudoChannel.addOutput(response, limit);
+        assertEquals(limit, response.get("output").getAsString());
+        assertFalse(response.has("truncated"));
+
+        SudoChannel.addOutput(response, limit + " extra");
+        String output = response.get("output").getAsString();
+        assertTrue(response.get("truncated").getAsBoolean());
+        assertTrue(output.endsWith("\n[输出超过 64 KiB，已截断。]\n"));
+        assertTrue(output.getBytes(StandardCharsets.UTF_8).length <= 65_536);
+        assertFalse(output.contains("�"));
     }
 
     @Test

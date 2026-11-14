@@ -9,7 +9,8 @@ from dataclasses import dataclass
 from fastapi import APIRouter, Header, HTTPException, Request, WebSocket, WebSocketDisconnect
 
 from sudo_config import (
-    MAX_RESULT_LENGTH,
+    MAX_RESULT_BYTES,
+    MAX_RESULT_MESSAGE_BYTES,
     SUDO_SUBMIT_PATH,
     SUDO_TIMEOUT,
     SUDO_WS_PATH,
@@ -20,7 +21,6 @@ from sudo_config import (
 logger = logging.getLogger("uvicorn.error.mc_qq_auth.sudo")
 PLUGIN_RESULTS = {"ok", "rejected", "error", "busy", "expired"}
 MAX_MESSAGE_BYTES = 8192
-MAX_RESULT_MESSAGE_BYTES = 12288
 SEND_TIMEOUT = 3
 
 
@@ -140,10 +140,12 @@ def sudo_router(
                     await websocket.close(code=1007)
                     break
                 status, output = result.get("status"), result.get("output")
+                truncated = result.get("truncated", False)
                 if (
                     not isinstance(status, str) or status not in PLUGIN_RESULTS
-                    or not isinstance(output, str) or len(output) > MAX_RESULT_LENGTH
+                    or not isinstance(output, str) or len(output) > MAX_RESULT_BYTES
                     or any(0xD800 <= ord(char) <= 0xDFFF for char in output)
+                    or len(output.encode("utf-8")) > MAX_RESULT_BYTES or type(truncated) is not bool
                 ):
                     await websocket.close(code=1007)
                     break
@@ -151,7 +153,10 @@ def sudo_router(
                     pending is not None and pending.plugin is websocket and not pending.result.done()
                     and result.get("id") == pending.request_id
                 ):
-                    pending.result.set_result({"status": status, "output": output})
+                    reply = {"status": status, "output": output}
+                    if truncated:
+                        reply["truncated"] = True
+                    pending.result.set_result(reply)
         finally:
             ready = False
             plugin = None

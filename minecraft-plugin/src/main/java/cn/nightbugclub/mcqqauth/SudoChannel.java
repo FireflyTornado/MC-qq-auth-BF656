@@ -10,6 +10,7 @@ import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.WebSocket;
 import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.LinkedHashMap;
 import java.util.concurrent.CompletionStage;
@@ -22,6 +23,8 @@ import static java.util.concurrent.TimeUnit.SECONDS;
 
 final class SudoChannel implements AutoCloseable {
     private static final int MAX_MESSAGE = 8192;
+    private static final int MAX_OUTPUT_BYTES = 64 * 1024;
+    private static final String TRUNCATION_NOTICE = "\n[输出超过 64 KiB，已截断。]\n";
     private static final long TTL_MS = 30_000;
     private static final long CLOCK_SKEW_MS = 1_000;
     private static final Gson JSON = new Gson();
@@ -203,14 +206,27 @@ final class SudoChannel implements AutoCloseable {
         JsonObject response = new JsonObject();
         response.addProperty("id", request.id);
         response.addProperty("status", result.status());
-        String output = result.output();
-        response.addProperty("output", output.codePointCount(0, output.length()) > 1500
-                ? output.substring(0, output.offsetByCodePoints(0, 1499)) + "…" : output);
+        addOutput(response, result.output());
         source.socket.sendText(JSON.toJson(response), true).whenComplete((socket, failure) -> {
             if (failure != null) {
                 disconnect(source, "回执发送失败");
             }
         });
+    }
+
+    static void addOutput(JsonObject response, String output) {
+        byte[] encoded = output.getBytes(StandardCharsets.UTF_8);
+        if (encoded.length <= MAX_OUTPUT_BYTES) {
+            // Decoding also ensures isolated UTF-16 surrogates cannot reach the JSON transport.
+            response.addProperty("output", new String(encoded, StandardCharsets.UTF_8));
+            return;
+        }
+        int end = MAX_OUTPUT_BYTES - TRUNCATION_NOTICE.getBytes(StandardCharsets.UTF_8).length;
+        while ((encoded[end] & 0xc0) == 0x80) {
+            end--;
+        }
+        response.addProperty("output", new String(encoded, 0, end, StandardCharsets.UTF_8) + TRUNCATION_NOTICE);
+        response.addProperty("truncated", true);
     }
 
     @Override

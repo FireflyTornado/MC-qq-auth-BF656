@@ -499,7 +499,7 @@ events:
         )))
         self.enterContext(patch.object(self.sudo, "recent", self.sudo.recent.copy()))
         submit = self.enterContext(patch.object(
-            self.sudo, "submit", return_value=("ok", "Players:\n[CQ:at,qq=all]\n"),
+            self.sudo, "submit", return_value=("ok", "Players:\n[CQ:at,qq=all]\n", False),
         ))
         await self.bot.handle_event(self.group_message("/sudo list", user=MEMBER))
         await self.bot.handle_event(self.group_message("/sudo list", group=OTHER_GROUP))
@@ -542,7 +542,7 @@ events:
         )))
         self.enterContext(patch.object(self.sudo, "recent", self.sudo.recent.copy()))
         self.enterContext(patch.object(self.sudo, "SUDO_TIMEOUT", 0.05))
-        with patch.object(self.sudo, "submit", return_value=("unknown", "")) as submit:
+        with patch.object(self.sudo, "submit", return_value=("unknown", "", False)) as submit:
             reply = await self.command_reply("/sudo list", message_id=42)
         self.assertEqual(Message(reply).extract_plain_text(), "执行超时，结果未知。")
         submit.assert_called_once()
@@ -553,11 +553,33 @@ events:
         )))
         self.enterContext(patch.object(self.sudo, "recent", self.sudo.recent.copy()))
         error = "Incorrect argument\nlist bad<--[HERE]\n"
-        with patch.object(self.sudo, "submit", side_effect=[("error", error), ("ok", "")]):
+        with patch.object(self.sudo, "submit", side_effect=[("error", error, False), ("ok", "", False)]):
             self.assertEqual(Message(await self.command_reply("/sudo list bad", message_id=43)).extract_plain_text(),
                              error)
             self.assertEqual(Message(await self.command_reply("/sudo list", message_id=44)).extract_plain_text(),
                              "命令已返回，服务端无输出。")
+
+    async def test_sudo_uploads_exact_utf8_and_reports_unconfirmed_upload(self):
+        self.enterContext(patch.object(self.sudo, "settings", SudoSettings(
+            frozenset({str(ABSENT)}), "bot-token", "plugin-token",
+        )))
+        self.enterContext(patch.object(self.sudo, "recent", self.sudo.recent.copy()))
+        self.enterContext(patch.object(self.sudo, "output_settings", self.sudo.SudoOutputSettings()))
+        output = "服务器反馈\r\n" * 11
+        with patch.object(self.sudo, "submit", return_value=("error", output, False)) as submit, patch.object(
+            self.bot, "call_api", AsyncMock(side_effect=[{"file_id": "uploaded"}, {"file_id": None}]),
+        ) as api:
+            await self.bot.handle_event(self.group_message("/sudo list", message_id=45))
+            self.reply.assert_not_awaited()
+            request_id = submit.call_args.args[1]["id"]
+            api.assert_awaited_once_with(
+                "upload_group_file", group_id=str(GROUP), name=f"sudo-{request_id}.txt",
+                file="base64://" + base64.b64encode(output.encode("utf-8")).decode("ascii"),
+            )
+            reply = await self.command_reply("/sudo list", message_id=46)
+            self.assertIn(submit.call_args.args[1]["id"], Message(reply).extract_plain_text())
+            self.assertIn("上传失败或未确认", Message(reply).extract_plain_text())
+            self.assertEqual(api.await_count, 2)
 
     async def test_bilingual_binding_commands_share_behavior(self):
         replies = []
