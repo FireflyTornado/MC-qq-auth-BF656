@@ -1,9 +1,15 @@
 package cn.nightbugclub.mcqqauth;
 
+import org.bukkit.Bukkit;
 import org.bukkit.Server;
+import org.bukkit.command.Command;
 import org.bukkit.command.CommandException;
+import org.bukkit.command.CommandSender;
+import org.bukkit.command.FormattedCommandAlias;
 import org.bukkit.command.RemoteConsoleCommandSender;
+import org.bukkit.command.SimpleCommandMap;
 import org.bukkit.configuration.file.YamlConfiguration;
+import org.bukkit.plugin.PluginManager;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -77,6 +83,46 @@ class SudoCommandsTest {
         clearInvocations(server);
         assertEquals("rejected", commands.execute("whitelist on").status());
         verify(server, never()).dispatchCommand(any(), anyString());
+    }
+
+    @Test
+    void unqualifiedAliasDoesNotRedirectSudoEvenWhenItShadowsAVanillaCommand() {
+        var commandMap = new SimpleCommandMap(server);
+        var first = mock(Command.class);
+        var second = mock(Command.class);
+        commandMap.register("first", "example", first);
+        commandMap.register("second", "example", second);
+        when(server.getCommandAliases()).thenReturn(
+                Map.of("greet", new String[]{"example:first", "example:second"}));
+        commandMap.registerServerAliases();
+        assertInstanceOf(FormattedCommandAlias.class, commandMap.getCommand("greet"));
+        assertNull(commandMap.getCommand("minecraft:greet"));
+        when(server.dispatchCommand(eq(console), anyString()))
+                .thenAnswer(call -> commandMap.dispatch(console, call.getArgument(1, String.class)));
+
+        var commands = new SudoCommands(server, Set.of("greet"),
+                () -> new MohistCommandFeedback.Capture(console, new BoundedCommandOutput()::snapshot));
+        assertEquals(new SudoCommands.Result("error", "服务端未找到该命令。"), commands.execute("greet"));
+
+        var vanilla = new Command("greet") {
+            @Override
+            public boolean execute(CommandSender sender, String label, String[] args) {
+                sender.sendMessage("vanilla command");
+                return true;
+            }
+        };
+        commandMap.register("greet", "minecraft", vanilla);
+        assertInstanceOf(FormattedCommandAlias.class, commandMap.getCommand("greet"));
+        assertSame(vanilla, commandMap.getCommand("minecraft:greet"));
+        try (var bukkit = mockStatic(Bukkit.class)) {
+            bukkit.when(Bukkit::getPluginManager).thenReturn(mock(PluginManager.class));
+            assertEquals("ok", commands.execute("greet").status());
+        }
+
+        verify(server, times(2)).dispatchCommand(console, "minecraft:greet");
+        verify(console).sendMessage("vanilla command");
+        verify(first, never()).execute(any(), anyString(), any());
+        verify(second, never()).execute(any(), anyString(), any());
     }
 
     @Test
