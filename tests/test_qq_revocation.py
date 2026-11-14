@@ -568,16 +568,53 @@ events:
             await self.command_reply("/sudo say hello", message_id=52)
             self.assertEqual(submit.call_count, 2)
 
-    async def test_sudo_uncertain_response_times_out_without_retry(self):
+    async def test_sudo_uncertain_response_holds_slot_until_timeout_without_retry(self):
         self.enterContext(patch.object(self.sudo, "settings", SudoSettings(
             frozenset({str(ABSENT)}), "bot-token", "plugin-token",
         )))
         self.enterContext(patch.object(self.sudo, "recent", self.sudo.recent.copy()))
-        self.enterContext(patch.object(self.sudo, "SUDO_TIMEOUT", 0.05))
-        with patch.object(self.sudo, "submit", return_value=("unknown", "", False)) as submit:
-            reply = await self.command_reply("/sudo list", message_id=42)
-        self.assertEqual(Message(reply).extract_plain_text(), "执行超时，结果未知。")
-        submit.assert_awaited_once()
+        waiting = asyncio.Event()
+        loop = asyncio.get_running_loop()
+        deadline = asyncio.timeout(self.sudo.SUDO_TIMEOUT)
+
+        async def wait_for_deadline(delay):
+            self.assertGreater(delay, 0)
+            waiting.set()
+            await loop.create_future()
+
+        with patch.object(self.sudo, "asyncio", wraps=asyncio) as command_asyncio, patch.object(
+            self.sudo, "submit", side_effect=[("unknown", "", False), ("ok", "online", False)],
+        ) as submit:
+            command_asyncio.timeout.side_effect = [deadline, asyncio.timeout(self.sudo.SUDO_TIMEOUT)]
+            command_asyncio.sleep.side_effect = wait_for_deadline
+            first = asyncio.create_task(self.bot.handle_event(self.group_message("/sudo list", message_id=42)))
+            wait_started = asyncio.create_task(waiting.wait())
+            try:
+                done, _ = await asyncio.wait((first, wait_started), timeout=5, return_when=asyncio.FIRST_COMPLETED)
+                self.assertIn(wait_started, done, "The first request must wait after receiving unknown")
+                self.assertFalse(first.done())
+                self.reply.assert_not_awaited()
+
+                reply = await self.command_reply("/sudo list", message_id=49)
+                self.assertEqual(Message(reply).extract_plain_text(), "有指令正在处理，请稍后重试。")
+                submit.assert_awaited_once()
+
+                self.reply.reset_mock()
+                deadline.reschedule(loop.time())
+                await asyncio.wait_for(first, 2)
+                self.reply.assert_awaited_once()
+                reply = self.reply.call_args.kwargs["message"]
+                self.assertEqual(Message(reply).extract_plain_text(), "执行超时，结果未知。")
+                submit.assert_awaited_once()
+
+                retry = await self.command_reply("/sudo list", message_id=50)
+                self.assertEqual(Message(retry).extract_plain_text(), "online")
+                self.assertEqual(submit.await_count, 2)
+            finally:
+                for task in (first, wait_started):
+                    if not task.done():
+                        task.cancel()
+                await asyncio.gather(first, wait_started, return_exceptions=True)
 
     async def test_sudo_closes_slow_http_reply_at_total_deadline(self):
         self.enterContext(patch.object(self.sudo, "settings", SudoSettings(
