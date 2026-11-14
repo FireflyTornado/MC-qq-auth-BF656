@@ -67,13 +67,15 @@ class SudoApiTests(unittest.IsolatedAsyncioTestCase):
         return sent[0]["status"], json.loads(sent[-1]["body"])
 
     @asynccontextmanager
-    async def connect(self, token="plugin-token"):
+    async def connect(self, token="plugin-token", *, block_send=None):
         incoming = asyncio.Queue()
         outgoing = asyncio.Queue()
         incoming.put_nowait({"type": "websocket.connect"})
 
         async def send(message):
             outgoing.put_nowait(message)
+            if block_send is not None and message["type"] == "websocket.send":
+                await block_send.wait()
 
         task = asyncio.create_task(self.app({
             "type": "websocket", "scheme": "ws", "path": SUDO_WS_PATH,
@@ -137,3 +139,17 @@ class SudoApiTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(next_request.done())
             self.result(incoming, current["id"])
             self.assertEqual((await next_request)[1], {"status": "ok", "output": "在线玩家 0/20"})
+
+    async def test_disconnect_releases_pending_command_even_if_send_is_blocked(self):
+        async with self.connect(block_send=asyncio.Event()) as (_, _, outgoing):
+            first = asyncio.create_task(self.submit(timeout=30))
+            await asyncio.wait_for(outgoing.get(), 2)
+
+        self.assertEqual(await asyncio.wait_for(first, 1), (200, {"status": "disconnected"}))
+        self.assertEqual(await self.submit(), (200, {"status": "unavailable"}))
+        async with self.connect() as (_, incoming, outgoing):
+            next_request = asyncio.create_task(self.submit(request_id="b" * 32))
+            request = json.loads((await asyncio.wait_for(outgoing.get(), 2))["text"])
+            self.result(incoming, request["id"], "after reconnect")
+        # The matching result was queued before the disconnect and must win.
+        self.assertEqual(await next_request, (200, {"status": "ok", "output": "after reconnect"}))

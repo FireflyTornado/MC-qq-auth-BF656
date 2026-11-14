@@ -585,11 +585,15 @@ events:
         )))
         self.enterContext(patch.object(self.sudo, "recent", self.sudo.recent.copy()))
         error = "Incorrect argument\nlist bad<--[HERE]\n"
-        with patch.object(self.sudo, "submit", side_effect=[("error", error, False), ("ok", "", False)]):
+        with patch.object(self.sudo, "submit", side_effect=[
+            ("error", error, False), ("ok", "", False), ("disconnected", "", False),
+        ]):
             self.assertEqual(Message(await self.command_reply("/sudo list bad", message_id=43)).extract_plain_text(),
                              error)
             self.assertEqual(Message(await self.command_reply("/sudo list", message_id=44)).extract_plain_text(),
                              "命令已返回，服务端无输出。")
+            self.assertEqual(Message(await self.command_reply("/sudo list", message_id=47)).extract_plain_text(),
+                             "指令通道已断开，执行结果未知。")
 
     async def test_sudo_uploads_exact_utf8_and_reports_unconfirmed_upload(self):
         self.enterContext(patch.object(self.sudo, "settings", SudoSettings(

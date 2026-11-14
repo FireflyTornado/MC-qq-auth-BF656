@@ -45,6 +45,7 @@ REPLIES = {
     "error": "服务端执行失败或无法确认结果。",
     "busy": "有指令正在处理，请稍后重试。",
     "unavailable": "Minecraft 指令通道当前离线。",
+    "disconnected": "指令通道已断开，执行结果未知。",
     "expired": "指令已过期，未执行。",
     "timeout": "执行超时，结果未知。",
 }

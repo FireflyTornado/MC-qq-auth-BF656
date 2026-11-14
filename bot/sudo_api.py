@@ -31,6 +31,18 @@ class PendingCommand:
     result: asyncio.Future
 
 
+async def send_command(work: PendingCommand, command: str, deadline_ms: int) -> None:
+    try:
+        async with asyncio.timeout(SEND_TIMEOUT):
+            await work.plugin.send_json({"id": work.request_id, "command": command, "deadline_ms": deadline_ms})
+    except WebSocketDisconnect:
+        if not work.result.done():
+            work.result.set_result({"status": "disconnected"})
+    except (TimeoutError, OSError, RuntimeError):
+        # An interrupted write can still have reached the game server.
+        logger.warning("/sudo #%s 未能确认指令已发送", work.request_id)
+
+
 def sudo_router(
     settings: SudoSettings | None,
     target_group: str,
@@ -88,17 +100,12 @@ def sudo_router(
         status = "timeout"
         try:
             async with asyncio.timeout(remaining / 1000):
-                try:
-                    async with asyncio.timeout(SEND_TIMEOUT):
-                        await work.plugin.send_json({
-                            "id": request_id,
-                            "command": command,
-                            "deadline_ms": deadline_ms,
-                        })
-                except (TimeoutError, OSError, RuntimeError, WebSocketDisconnect):
-                    # An interrupted write can still have reached the game server.
-                    logger.warning("/sudo #%s 未能确认指令已发送", request_id)
-                result = await work.result
+                async with asyncio.TaskGroup() as tasks:
+                    sending = tasks.create_task(send_command(work, command, deadline_ms))
+                    try:
+                        result = await work.result
+                    finally:
+                        sending.cancel()
                 status = result["status"]
                 return result
         except TimeoutError:
@@ -160,5 +167,7 @@ def sudo_router(
         finally:
             ready = False
             plugin = None
+            if pending is not None and pending.plugin is websocket and not pending.result.done():
+                pending.result.set_result({"status": "disconnected"})
 
     return router
