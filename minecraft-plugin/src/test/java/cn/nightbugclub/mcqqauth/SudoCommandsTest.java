@@ -1,6 +1,5 @@
 package cn.nightbugclub.mcqqauth;
 
-import com.google.gson.JsonObject;
 import org.bukkit.Server;
 import org.bukkit.command.CommandException;
 import org.bukkit.command.RemoteConsoleCommandSender;
@@ -13,8 +12,10 @@ import org.junit.jupiter.params.provider.ValueSource;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.charset.StandardCharsets;
+import java.net.SocketAddress;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.Consumer;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.Mockito.*;
@@ -54,7 +55,7 @@ class SudoCommandsTest {
         var prefixes = SudoCommands.readAllowlist(file);
         assertEquals(Set.of("whitelist add", "example:inspect world"), prefixes);
         var commands = new SudoCommands(server, prefixes,
-                () -> new MohistCommandFeedback.Capture(console, () -> ""));
+                () -> new MohistCommandFeedback.Capture(console, new BoundedCommandOutput()::snapshot));
         when(server.dispatchCommand(console, "minecraft:whitelist add Steve Alex")).thenReturn(true);
         when(server.dispatchCommand(console, "example:inspect world \"夜间 测试\"")).thenReturn(true);
         assertEquals("ok", commands.execute("whitelist add Steve Alex").status());
@@ -66,7 +67,7 @@ class SudoCommandsTest {
     @Test
     void rootPrefixIncludesExactCommandAndEverySubcommand() {
         var commands = new SudoCommands(server, Set.of("whitelist"),
-                () -> new MohistCommandFeedback.Capture(console, () -> ""));
+                () -> new MohistCommandFeedback.Capture(console, new BoundedCommandOutput()::snapshot));
         when(server.dispatchCommand(eq(console), anyString())).thenReturn(true);
         for (String input : Set.of("whitelist", "whitelist on", "whitelist remove Steve", "whitelist add Alex")) {
             assertEquals("ok", commands.execute(input).status());
@@ -82,12 +83,12 @@ class SudoCommandsTest {
     void returnsNativeFeedbackEvenOnDispatchFailureAndIsolatesEachRequest() {
         var commands = new SudoCommands(server, Set.of("list"), () -> {
             var sender = mock(RemoteConsoleCommandSender.class);
-            var output = new StringBuilder();
+            var output = new BoundedCommandOutput();
             doAnswer(call -> {
                 output.append(call.getArgument(0, String.class));
                 return null;
             }).when(sender).sendMessage(anyString());
-            return new MohistCommandFeedback.Capture(sender, output::toString);
+            return new MohistCommandFeedback.Capture(sender, output::snapshot);
         });
         when(server.dispatchCommand(any(RemoteConsoleCommandSender.class), eq("minecraft:list")))
                 .thenAnswer(call -> {
@@ -117,18 +118,53 @@ class SudoCommandsTest {
 
     @Test
     void retainsFullUtf8BudgetAndTruncatesOnCharacterBoundaryWithNotice() {
-        var response = new JsonObject();
+        var output = new BoundedCommandOutput();
         String limit = "😀".repeat(16_384);
-        SudoChannel.addOutput(response, limit);
-        assertEquals(limit, response.get("output").getAsString());
-        assertFalse(response.has("truncated"));
+        assertFalse(output.append(limit));
+        assertEquals(new BoundedCommandOutput.Snapshot(limit, false), output.snapshot());
 
-        SudoChannel.addOutput(response, limit + " extra");
-        String output = response.get("output").getAsString();
-        assertTrue(response.get("truncated").getAsBoolean());
-        assertTrue(output.endsWith("\n[输出超过 64 KiB，已截断。]\n"));
-        assertTrue(output.getBytes(StandardCharsets.UTF_8).length <= 65_536);
-        assertFalse(output.contains("�"));
+        assertTrue(output.append(" extra"));
+        String notice = "\n[输出超过 64 KiB，已截断。]\n";
+        int prefixLength = (65_536 - notice.getBytes(StandardCharsets.UTF_8).length) / 4;
+        var expected = new BoundedCommandOutput.Snapshot("😀".repeat(prefixLength) + notice, true);
+        assertEquals(expected, output.snapshot());
+        assertTrue(output.append(limit));
+        assertEquals(expected, output.snapshot());
+    }
+
+    @Test
+    void generatedSourceRoutesBothFeedbackMethodsBeforeTheOriginalBuffer() throws Exception {
+        var output = new BoundedCommandOutput();
+        var constructor = MohistCommandFeedback.createSource(FeedbackSource.class, Object.class,
+                FeedbackSource.class.getMethod("m_213846_", FeedbackComponent.class),
+                FeedbackSource.class.getMethod("sendMessage", String.class));
+        Consumer<FeedbackComponent> appendComponent = component -> output.append(component.text());
+        Consumer<String> appendString = output::append;
+        var source = (FeedbackSource) constructor.newInstance(new Object(), null, appendComponent, appendString);
+        source.m_213846_(new FeedbackComponent("原版反馈\n"));
+        source.sendMessage("插件反馈\n");
+        assertEquals(new BoundedCommandOutput.Snapshot("原版反馈\n插件反馈\n", false), output.snapshot());
+        source.m_213846_(new FeedbackComponent("a".repeat(100_000)));
+        var snapshot = output.snapshot();
+        assertTrue(snapshot.truncated());
+        assertTrue(snapshot.text().startsWith("原版反馈\n插件反馈\n"));
+        assertTrue(snapshot.text().getBytes(StandardCharsets.UTF_8).length <= 65_536);
+        source.sendMessage("ignored");
+        assertEquals(snapshot, output.snapshot());
+    }
+
+    public record FeedbackComponent(String text) {}
+
+    public static class FeedbackSource {
+        public FeedbackSource(Object server, SocketAddress address) {}
+
+        public void m_213846_(FeedbackComponent component) {
+            fail("Vanilla output must bypass the original buffer");
+        }
+
+        public void sendMessage(String text) {
+            fail("Plugin output must bypass the original buffer");
+        }
     }
 
     @Test

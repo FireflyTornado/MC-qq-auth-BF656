@@ -15,7 +15,11 @@ final class SudoCommands {
     static final String ALLOWLIST_FILE = "sudo-allowlist.txt";
     private static final Pattern COMMAND_LABEL = Pattern.compile("[A-Za-z0-9_.-]+(?::[A-Za-z0-9_.-]+)?");
 
-    record Result(String status, String output) {
+    record Result(String status, String output, boolean truncated) {
+        Result(String status, String output) {
+            this(status, output, false);
+        }
+
         Result(String status) {
             this(status, "");
         }
@@ -96,17 +100,17 @@ final class SudoCommands {
             try {
                 dispatched = server.dispatchCommand(feedback.sender(), qualified);
             } catch (CommandException e) {
-                String output = feedback.output().get();
-                if (output.isBlank()) {
+                var output = feedback.output().get();
+                if (output.text().isBlank() && !output.truncated()) {
                     throw e;
                 }
-                return new Result("error", output);
+                return new Result("error", output.text(), output.truncated());
             }
-            String output = feedback.output().get();
-            if (!dispatched && output.isBlank()) {
+            var output = feedback.output().get();
+            if (!dispatched && output.text().isBlank() && !output.truncated()) {
                 return new Result("error", "服务端未找到该命令。");
             }
-            return new Result(dispatched ? "ok" : "error", output);
+            return new Result(dispatched ? "ok" : "error", output.text(), output.truncated());
         } finally {
             dispatching = false;
         }
