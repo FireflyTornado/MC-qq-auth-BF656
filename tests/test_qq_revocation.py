@@ -577,7 +577,40 @@ events:
         with patch.object(self.sudo, "submit", return_value=("unknown", "", False)) as submit:
             reply = await self.command_reply("/sudo list", message_id=42)
         self.assertEqual(Message(reply).extract_plain_text(), "执行超时，结果未知。")
-        submit.assert_called_once()
+        submit.assert_awaited_once()
+
+    async def test_sudo_closes_slow_http_reply_at_total_deadline(self):
+        self.enterContext(patch.object(self.sudo, "settings", SudoSettings(
+            frozenset({str(ABSENT)}), "bot-token", "plugin-token",
+        )))
+        self.enterContext(patch.object(self.sudo, "recent", self.sudo.recent.copy()))
+        self.enterContext(patch.object(self.sudo, "SUDO_TIMEOUT", 0.5))
+        reply_started = asyncio.Event()
+        disconnected = asyncio.Event()
+
+        async def slow_reply(reader, writer):
+            try:
+                await reader.readuntil(b"\r\n\r\n")
+                await reader.readuntil(b"}")
+                writer.write(b"HTTP/1.1 200 OK\r\nContent-Length: 10000\r\n\r\n{")
+                await writer.drain()
+                reply_started.set()
+                while not reader.at_eof():
+                    writer.write(b" ")
+                    await writer.drain()
+                    await asyncio.sleep(0.02)
+            except (ConnectionError, asyncio.IncompleteReadError):
+                pass
+            finally:
+                writer.close()
+                disconnected.set()
+
+        async with await asyncio.start_server(slow_reply, "127.0.0.1", 0) as server:
+            self.enterContext(patch.object(self.sudo, "HEALTH_PORT", server.sockets[0].getsockname()[1]))
+            reply = await self.command_reply("/sudo list", message_id=48)
+            self.assertTrue(reply_started.is_set())
+            self.assertEqual(Message(reply).extract_plain_text(), "执行超时，结果未知。")
+            await asyncio.wait_for(disconnected.wait(), 1)
 
     async def test_sudo_returns_raw_error_and_reports_empty_feedback(self):
         self.enterContext(patch.object(self.sudo, "settings", SudoSettings(

@@ -4,10 +4,9 @@ import time
 import unicodedata
 from base64 import b64encode
 from collections import OrderedDict
-from contextlib import closing
-from http.client import HTTPConnection, HTTPException
 from uuid import uuid4
 
+import h11
 from nonebot import logger, on_command
 from nonebot.adapters.onebot.v11 import Bot, GroupMessageEvent, MessageSegment
 from nonebot.permission import Permission
@@ -76,22 +75,45 @@ def command_from(event: GroupMessageEvent) -> str | None:
     return command if is_single_command(command) else None
 
 
-def submit(token: str, payload: dict) -> tuple[str, str, bool]:
-    # Fixed loopback address. The request cannot follow redirects or use an environment proxy.
+async def submit(token: str, payload: dict) -> tuple[str, str, bool]:
+    # Socket I/O is cancellable under the handler's total deadline.
     try:
-        with closing(HTTPConnection("127.0.0.1", HEALTH_PORT, timeout=SUDO_TIMEOUT)) as connection:
-            connection.request("POST", SUDO_SUBMIT_PATH, json.dumps(payload), {
-                "Authorization": f"Bearer {token}",
-                "Content-Type": "application/json",
-            })
-            with connection.getresponse() as response:
-                if response.status != 200:
-                    return ("unavailable" if response.status in {401, 403, 404} else "unknown"), "", False
-                raw = response.read(MAX_RESULT_MESSAGE_BYTES + 1)
-                result = json.loads(raw) if len(raw) <= MAX_RESULT_MESSAGE_BYTES else None
-    except TimeoutError:
-        return "timeout", "", False
-    except (OSError, HTTPException, ValueError, RecursionError):
+        reader, writer = await asyncio.open_connection("127.0.0.1", HEALTH_PORT)
+        try:
+            protocol = h11.Connection(h11.CLIENT)
+            body = json.dumps(payload).encode("utf-8")
+            request = h11.Request(method="POST", target=SUDO_SUBMIT_PATH, headers=[
+                ("Host", f"127.0.0.1:{HEALTH_PORT}"),
+                ("Authorization", f"Bearer {token}"),
+                ("Content-Type", "application/json"),
+                ("Content-Length", str(len(body))),
+                ("Connection", "close"),
+            ])
+            writer.write(protocol.send(request))
+            writer.write(protocol.send(h11.Data(data=body)))
+            writer.write(protocol.send(h11.EndOfMessage()))
+            await writer.drain()
+
+            raw = bytearray()
+            while True:
+                event = protocol.next_event()
+                if event is h11.NEED_DATA:
+                    protocol.receive_data(await reader.read(8192))
+                elif isinstance(event, h11.Response) and event.status_code != 200:
+                    return ("unavailable" if event.status_code in {401, 403, 404} else "unknown"), "", False
+                elif isinstance(event, h11.Data):
+                    if len(raw) + len(event.data) > MAX_RESULT_MESSAGE_BYTES:
+                        return "unknown", "", False
+                    raw.extend(event.data)
+                elif isinstance(event, h11.EndOfMessage):
+                    break
+                elif isinstance(event, h11.ConnectionClosed) or event is h11.PAUSED:
+                    return "unknown", "", False
+            result = json.loads(raw)
+        finally:
+            # Abort immediately, including if cancellation interrupted a write or read.
+            writer.transport.abort()
+    except (OSError, h11.ProtocolError, ValueError, RecursionError):
         return "unknown", "", False
     if isinstance(result, dict):
         status, output = result.get("status"), result.get("output", "")
@@ -160,7 +182,7 @@ async def handle_sudo(bot: Bot, event: GroupMessageEvent) -> None:
         }
         try:
             async with asyncio.timeout(SUDO_TIMEOUT) as wait:
-                status, output, truncated = await asyncio.to_thread(submit, settings.bot_token, payload)
+                status, output, truncated = await submit(settings.bot_token, payload)
                 if status == "unknown":
                     # A broken HTTP response cannot tell us whether the plugin executed.
                     await asyncio.sleep(max(0, wait.when() - asyncio.get_running_loop().time()))
