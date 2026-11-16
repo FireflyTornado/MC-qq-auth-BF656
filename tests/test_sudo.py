@@ -110,6 +110,15 @@ class SudoApiTests(unittest.IsolatedAsyncioTestCase):
             self.result(incoming, request["id"], output, truncated=True)
             self.assertEqual(await first, (200, {"status": "ok", "output": output, "truncated": True}))
 
+    async def test_capture_completeness_is_independent_of_execution_status(self):
+        async with self.connect() as (_, incoming, outgoing):
+            first = asyncio.create_task(self.submit())
+            request = json.loads((await asyncio.wait_for(outgoing.get(), 2))["text"])
+            self.result(incoming, request["id"], "有错误反馈", status="error", capture_incomplete=True)
+            self.assertEqual(await first, (200, {
+                "status": "error", "output": "有错误反馈", "capture_incomplete": True,
+            }))
+
     async def test_permission_and_single_command_validation(self):
         self.assertEqual((await self.submit(qq_id="102"))[0], 403)
         self.assertEqual((await self.submit(group_id="303"))[0], 403)

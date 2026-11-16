@@ -1,5 +1,6 @@
 package cn.nightbugclub.mcqqauth;
 
+import org.apache.logging.log4j.LogManager;
 import org.bukkit.Bukkit;
 import org.bukkit.Server;
 import org.bukkit.command.Command;
@@ -22,6 +23,8 @@ import java.net.SocketAddress;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -62,7 +65,7 @@ class SudoCommandsTest {
         var prefixes = SudoCommands.readAllowlist(file);
         assertEquals(Set.of("whitelist add", "example:inspect world"), prefixes);
         var commands = new SudoCommands(server, prefixes,
-                () -> new MohistCommandFeedback.Capture(console, new BoundedCommandOutput()::snapshot));
+                () -> new MohistCommandFeedback.Capture(console, new BoundedCommandOutput()));
         when(server.dispatchCommand(console, "whitelist add Steve Alex")).thenReturn(true);
         when(server.dispatchCommand(console, "example:inspect world \"夜间 测试\"")).thenReturn(true);
         assertEquals("ok", commands.execute("whitelist add Steve Alex").status());
@@ -74,7 +77,7 @@ class SudoCommandsTest {
     @Test
     void rootPrefixIncludesExactCommandAndEverySubcommand() {
         var commands = new SudoCommands(server, Set.of("whitelist"),
-                () -> new MohistCommandFeedback.Capture(console, new BoundedCommandOutput()::snapshot));
+                () -> new MohistCommandFeedback.Capture(console, new BoundedCommandOutput()));
         when(server.dispatchCommand(eq(console), anyString())).thenReturn(true);
         for (String input : Set.of("whitelist", "whitelist on", "whitelist remove Steve", "whitelist add Alex")) {
             assertEquals("ok", commands.execute(input).status());
@@ -95,7 +98,7 @@ class SudoCommandsTest {
                 .thenAnswer(call -> commandMap.dispatch(console, call.getArgument(1, String.class)));
 
         var commands = new SudoCommands(server, Set.of("greet", "minecraft:greet"),
-                () -> new MohistCommandFeedback.Capture(console, new BoundedCommandOutput()::snapshot));
+                () -> new MohistCommandFeedback.Capture(console, new BoundedCommandOutput()));
         try (var bukkit = mockStatic(Bukkit.class)) {
             bukkit.when(Bukkit::getPluginManager).thenReturn(mock(PluginManager.class));
             assertEquals("ok", commands.execute("greet").status());
@@ -128,7 +131,7 @@ class SudoCommandsTest {
         assertInstanceOf(FormattedCommandAlias.class, commandMap.getCommand(alias));
 
         var commands = new SudoCommands(server, Set.of(alias),
-                () -> new MohistCommandFeedback.Capture(console, new BoundedCommandOutput()::snapshot));
+                () -> new MohistCommandFeedback.Capture(console, new BoundedCommandOutput()));
         assertEquals("rejected", commands.execute(alias + " argument").status());
         verify(server, never()).dispatchCommand(any(), anyString());
     }
@@ -139,10 +142,10 @@ class SudoCommandsTest {
             var sender = mock(RemoteConsoleCommandSender.class);
             var output = new BoundedCommandOutput();
             doAnswer(call -> {
-                output.append(call.getArgument(0, String.class));
+                output.appendSender(call.getArgument(0, String.class));
                 return null;
             }).when(sender).sendMessage(anyString());
-            return new MohistCommandFeedback.Capture(sender, output::snapshot);
+            return new MohistCommandFeedback.Capture(sender, output);
         });
         when(server.dispatchCommand(any(RemoteConsoleCommandSender.class), eq("list")))
                 .thenAnswer(call -> {
@@ -161,6 +164,32 @@ class SudoCommandsTest {
     }
 
     @Test
+    void fallsBackToSameThreadConsoleLogsAndDetachesAfterDispatch() {
+        var logger = LogManager.getLogger(SudoCommandsTest.class);
+        var commands = new SudoCommands(server, Set.of("list"), () -> {
+            var output = new BoundedCommandOutput();
+            doAnswer(call -> {
+                output.appendSender(call.getArgument(0, String.class));
+                return null;
+            }).when(console).sendMessage(anyString());
+            return new MohistCommandFeedback.Capture(console, output);
+        });
+        when(server.dispatchCommand(console, "list")).thenAnswer(call -> {
+            logger.error("first command log");
+            CompletableFuture.runAsync(() -> logger.error("unrelated worker log")).join();
+            console.sendMessage("sender reply\n");
+            logger.error("second command log");
+            throw new CommandException("expected test failure");
+        }).thenReturn(true);
+
+        assertEquals(new SudoCommands.Result("error", "first command log\nsender reply\nsecond command log\n"),
+                commands.execute("list"));
+        logger.error("outside dispatch");
+        assertEquals(new SudoCommands.Result("ok", "命令已返回，未捕获到输出。扩展采集模块未启用。"),
+                commands.execute("list"));
+    }
+
+    @Test
     void unavailableFeedbackDoesNotDispatch() {
         var commands = new SudoCommands(server, Set.of("list"), () -> {
             throw new IllegalStateException("No compatible feedback source");
@@ -171,23 +200,49 @@ class SudoCommandsTest {
     }
 
     @Test
-    void waitsForTrackedOutputWithoutBlockingTheServerThreadAndPreservesItOnTimeout() {
+    void waitsForBothSenderFeedbackAndTrackedCallbacks() throws Exception {
         var completed = new CompletableFuture<Boolean>();
         var output = new BoundedCommandOutput();
         var commands = new SudoCommands(server, Set.of("say"), () ->
-                new MohistCommandFeedback.Capture(console, output::snapshot, () -> () -> completed));
+                new MohistCommandFeedback.Capture(console, output, () -> () -> completed));
         when(server.dispatchCommand(console, "say hello")).thenReturn(true);
 
         var waiting = commands.execute("say hello", System.currentTimeMillis() + 30_000);
         assertFalse(waiting.isDone());
         assertFalse(commands.isDispatching());
-        output.appendLine("hello");
         completed.complete(true);
-        assertEquals(new SudoCommands.Result("ok", "hello\n"), waiting.join());
+        assertFalse(waiting.isDone());
+        output.appendSender("late sender feedback\n");
+        assertEquals(new SudoCommands.Result("ok", "late sender feedback\n"), waiting.get(2, TimeUnit.SECONDS));
+    }
 
+    @Test
+    void keepsTheCommandStatusAndCollectedOutputWhenTrackingTimesOut() {
+        var output = new BoundedCommandOutput();
+        output.appendLine("hello");
         var incomplete = new SudoCommands(server, Set.of("say"), () ->
-                new MohistCommandFeedback.Capture(console, output::snapshot, () -> CompletableFuture::new));
-        assertEquals(new SudoCommands.Result("partial", "hello\n"), incomplete.execute("say hello"));
+                new MohistCommandFeedback.Capture(console, output, () -> CompletableFuture::new));
+        when(server.dispatchCommand(console, "say hello")).thenReturn(true);
+        assertEquals(new SudoCommands.Result("ok", "hello\n", false, true), incomplete.execute("say hello"));
+    }
+
+    @Test
+    void measuresQuietFromSenderTextOnlyAndClosesTheSharedBuffer() {
+        var time = new AtomicLong();
+        var output = new BoundedCommandOutput(time::get);
+        output.appendLine("player packet");
+        output.startSenderWait(3000);
+        assertEquals(TimeUnit.MILLISECONDS.toNanos(3000), output.senderWaitNanos());
+        time.set(TimeUnit.MILLISECONDS.toNanos(800));
+        output.appendSender("sender reply\n");
+        assertEquals(TimeUnit.MILLISECONDS.toNanos(500), output.senderWaitNanos());
+        time.set(TimeUnit.MILLISECONDS.toNanos(1300));
+        output.appendLine("tracked log");
+        assertEquals(0, output.senderWaitNanos());
+        var finished = output.finish();
+        output.appendSender("too late");
+        assertEquals("player packet\nsender reply\ntracked log\n", finished.text());
+        assertEquals(finished, output.snapshot());
     }
 
     @Test

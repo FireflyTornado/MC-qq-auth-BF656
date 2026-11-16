@@ -8,6 +8,7 @@ import org.apache.logging.log4j.core.config.Property;
 
 import java.io.PrintWriter;
 import java.io.StringWriter;
+import java.util.ArrayDeque;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Consumer;
@@ -92,17 +93,32 @@ public final class OutputCapture {
         }
     }
 
-    public static void broadcast(Object message, Object chatType) {
+    public static void beginBroadcast(Object message, Object chatType) {
         Frame frame = ACTIVE.get();
         if (frame == null || frame.session.completed.isDone()) {
             return;
         }
+        String body;
         try {
-            String body = VanillaOutput.broadcast(message, chatType);
-            frame.broadcast = body;
-            frame.session.append(body);
+            body = VanillaOutput.broadcast(message, chatType);
         } catch (ReflectiveOperationException | RuntimeException e) {
+            frame.broadcasts.push(new Broadcast(null));
             frame.session.incomplete();
+            return;
+        }
+        beginBroadcast(body);
+    }
+
+    static void beginBroadcast(String body) {
+        Frame frame = ACTIVE.get();
+        frame.broadcasts.push(new Broadcast(body));
+        frame.session.append(body);
+    }
+
+    public static void endBroadcast() {
+        Frame frame = ACTIVE.get();
+        if (frame != null) {
+            frame.broadcasts.poll();
         }
     }
 
@@ -112,7 +128,7 @@ public final class OutputCapture {
             return;
         }
         try {
-            String output = VanillaOutput.packet(connection, packet, frame.broadcast);
+            String output = VanillaOutput.packet(connection, packet, frame.broadcastBody());
             if (output != null) {
                 frame.session.append(output);
             }
@@ -140,12 +156,19 @@ public final class OutputCapture {
 
     private static final class Frame {
         final Session session;
-        String broadcast;
+        final ArrayDeque<Broadcast> broadcasts = new ArrayDeque<>();
 
         Frame(Session session) {
             this.session = session;
         }
+
+        String broadcastBody() {
+            Broadcast broadcast = broadcasts.peek();
+            return broadcast == null ? null : broadcast.body();
+        }
     }
+
+    private record Broadcast(String body) {}
 
     private static final class Session {
         final CompletableFuture<Boolean> completed = new CompletableFuture<>();
@@ -195,9 +218,10 @@ public final class OutputCapture {
                 return;
             }
             String message = event.getMessage().getFormattedMessage();
-            if (frame.broadcast != null && event.getThrown() == null
+            String broadcast = frame.broadcastBody();
+            if (broadcast != null && event.getThrown() == null
                     && "net.minecraft.server.MinecraftServer".equals(event.getLoggerName())
-                    && (message.equals(frame.broadcast) || message.equals("[Not Secure] " + frame.broadcast))) {
+                    && (message.equals(broadcast) || message.equals("[Not Secure] " + broadcast))) {
                 return;
             }
             frame.session.append(message);

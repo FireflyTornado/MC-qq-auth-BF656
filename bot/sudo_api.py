@@ -148,11 +148,13 @@ def sudo_router(
                     break
                 status, output = result.get("status"), result.get("output")
                 truncated = result.get("truncated", False)
+                capture_incomplete = result.get("capture_incomplete", False)
                 if (
                     not isinstance(status, str) or status not in PLUGIN_RESULTS
                     or not isinstance(output, str) or len(output) > MAX_RESULT_BYTES
                     or any(0xD800 <= ord(char) <= 0xDFFF for char in output)
                     or len(output.encode("utf-8")) > MAX_RESULT_BYTES or type(truncated) is not bool
+                    or type(capture_incomplete) is not bool
                 ):
                     await websocket.close(code=1007)
                     break
@@ -160,9 +162,11 @@ def sudo_router(
                     pending is not None and pending.plugin is websocket and not pending.result.done()
                     and result.get("id") == pending.request_id
                 ):
-                    reply = {"status": status, "output": output}
+                    reply = {"status": "ok" if status == "partial" else status, "output": output}
                     if truncated:
                         reply["truncated"] = True
+                    if capture_incomplete or status == "partial":
+                        reply["capture_incomplete"] = True
                     pending.result.set_result(reply)
         finally:
             ready = False

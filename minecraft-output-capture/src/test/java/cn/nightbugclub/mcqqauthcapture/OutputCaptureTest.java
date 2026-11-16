@@ -13,6 +13,21 @@ import static org.junit.jupiter.api.Assertions.*;
 
 class OutputCaptureTest {
     @Test
+    void deduplicatesTheConsoleCopyWithinEachBroadcastOnly() {
+        var log = LogManager.getLogger("net.minecraft.server.MinecraftServer");
+        var output = new ArrayList<String>();
+        var seal = OutputCapture.begin(output::add);
+        for (int broadcast = 0; broadcast < 2; broadcast++) {
+            OutputCapture.beginBroadcast("same text");
+            log.error("same text");
+            OutputCapture.endBroadcast();
+        }
+        log.error("same text");
+        assertTrue(seal.get().join());
+        assertEquals(List.of("same text", "same text", "same text"), output);
+    }
+
+    @Test
     void attributesLogsFromDelayedCallbacksToTheirOriginalRequest() throws Exception {
         var log = LogManager.getLogger("test.command");
         var first = new ArrayList<String>();

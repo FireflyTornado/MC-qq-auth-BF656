@@ -17,7 +17,11 @@ final class SudoCommands {
     static final String ALLOWLIST_FILE = "sudo-allowlist.txt";
     private static final Pattern COMMAND_LABEL = Pattern.compile("[A-Za-z0-9_.-]+(?::[A-Za-z0-9_.-]+)?");
 
-    record Result(String status, String output, boolean truncated) {
+    record Result(String status, String output, boolean truncated, boolean captureIncomplete) {
+        Result(String status, String output, boolean truncated) {
+            this(status, output, truncated, false);
+        }
+
         Result(String status, String output) {
             this(status, output, false);
         }
@@ -99,24 +103,61 @@ final class SudoCommands {
         } catch (IllegalStateException e) {
             return CompletableFuture.completedFuture(new Result("error", "服务端命令反馈接口不可用，指令未执行。"));
         }
-        MohistCommandFeedback.Session session = feedback.beginExtendedCapture().get();
+        BoundedCommandOutput output = feedback.output();
+        MohistCommandFeedback.Session session = null;
+        boolean captureFailed = false;
+        try {
+            session = feedback.beginExtendedCapture().get();
+        } catch (IllegalStateException e) {
+            captureFailed = true;
+        }
         CommandException dispatchFailure = null;
         boolean dispatched = false;
         CompletableFuture<Boolean> complete;
+        boolean dispatchAborted = false;
         dispatching = true;
-        try {
+        try (var console = session == null ? openConsoleCapture(output) : null) {
             dispatched = server.dispatchCommand(feedback.sender(), command);
         } catch (CommandException e) {
             dispatchFailure = e;
+        } catch (RuntimeException | Error e) {
+            dispatchAborted = true;
+            output.close();
+            throw e;
         } finally {
             dispatching = false;
-            complete = session == null ? CompletableFuture.completedFuture(true) : session.finish();
+            complete = session == null ? CompletableFuture.completedFuture(!captureFailed) : session.finish();
+            if (dispatchAborted) {
+                complete.complete(false);
+            }
         }
-        boolean found = dispatched;
-        CommandException failure = dispatchFailure;
-        return complete.completeOnTimeout(false, Math.max(0, captureDeadlineMs - System.currentTimeMillis()),
-                        TimeUnit.MILLISECONDS)
-                .thenApply(captured -> commandResult(feedback.output().get(), found, failure, captured, session != null));
+        if (!dispatched) {
+            var snapshot = output.finish();
+            complete.complete(false);
+            return CompletableFuture.completedFuture(commandResult(snapshot, false, dispatchFailure, complete.join(), false));
+        }
+        boolean extended = session != null;
+        long remaining = Math.max(0, captureDeadlineMs - System.currentTimeMillis());
+        var senderDone = output.awaitSender(Math.min(remaining, BoundedCommandOutput.MAX_SENDER_WAIT_MS));
+        var captured = complete.completeOnTimeout(false, remaining, TimeUnit.MILLISECONDS);
+        var result = senderDone.thenCombine(captured,
+                (unused, allCaptured) -> commandResult(output.finish(), true, null, allCaptured, extended));
+        result.whenComplete((ignored, failure) -> {
+            if (failure != null) {
+                output.close();
+                complete.complete(false);
+                senderDone.complete(null);
+            }
+        });
+        return result;
+    }
+
+    private ConsoleLogCapture openConsoleCapture(BoundedCommandOutput output) {
+        try {
+            return ConsoleLogCapture.open(server.getClass().getClassLoader(), output);
+        } catch (RuntimeException | LinkageError e) {
+            return null;
+        }
     }
 
     private static Result commandResult(BoundedCommandOutput.Snapshot output, boolean dispatched, CommandException failure,
@@ -128,10 +169,10 @@ final class SudoCommands {
         if (failure != null && empty && captured) {
             throw failure;
         }
-        if (dispatched && empty && !extended) {
-            return new Result("ok", "命令已返回，未收到执行者反馈。扩展输出采集模块未启用。");
+        if (dispatched && empty && !extended && captured) {
+            return new Result("ok", "命令已返回，未捕获到输出。扩展采集模块未启用。");
         }
-        return new Result(!captured ? "partial" : dispatched ? "ok" : "error", output.text(), output.truncated());
+        return new Result(dispatched ? "ok" : "error", output.text(), output.truncated(), !captured);
     }
 
     private static String label(String command) {

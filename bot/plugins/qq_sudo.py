@@ -39,7 +39,7 @@ MAX_RECENT = 1024
 replay_cache_blocked_until = 0.0
 UPLOAD_TIMEOUT = 20
 REPLIES = {
-    "ok": "命令已返回，服务端无输出。",
+    "ok": "命令已返回，未捕获到输出",
     "rejected": "该指令或参数未获服务端许可。",
     "error": "服务端执行失败或无法确认结果。",
     "busy": "有指令正在处理，请稍后重试。",
@@ -47,8 +47,8 @@ REPLIES = {
     "disconnected": "指令通道已断开，执行结果未知。",
     "expired": "指令已过期，未执行。",
     "timeout": "执行超时，结果未知。",
-    "partial": "命令已返回，输出采集不完整。",
 }
+CAPTURE_INCOMPLETE = "命令已返回，输出采集不完整。"
 
 
 def allowed(event: GroupMessageEvent) -> bool:
@@ -76,7 +76,7 @@ def command_from(event: GroupMessageEvent) -> str | None:
     return command if is_single_command(command) else None
 
 
-async def submit(token: str, payload: dict) -> tuple[str, str, bool]:
+async def submit(token: str, payload: dict) -> tuple[str, str, bool, bool]:
     # Socket I/O is cancellable under the handler's total deadline.
     try:
         reader, writer = await asyncio.open_connection("127.0.0.1", HEALTH_PORT)
@@ -101,31 +101,34 @@ async def submit(token: str, payload: dict) -> tuple[str, str, bool]:
                 if event is h11.NEED_DATA:
                     protocol.receive_data(await reader.read(8192))
                 elif isinstance(event, h11.Response) and event.status_code != 200:
-                    return ("unavailable" if event.status_code in {401, 403, 404} else "unknown"), "", False
+                    return ("unavailable" if event.status_code in {401, 403, 404} else "unknown"), "", False, False
                 elif isinstance(event, h11.Data):
                     if len(raw) + len(event.data) > MAX_RESULT_MESSAGE_BYTES:
-                        return "unknown", "", False
+                        return "unknown", "", False, False
                     raw.extend(event.data)
                 elif isinstance(event, h11.EndOfMessage):
                     break
                 elif isinstance(event, h11.ConnectionClosed) or event is h11.PAUSED:
-                    return "unknown", "", False
+                    return "unknown", "", False, False
             result = json.loads(raw)
         finally:
             # Abort immediately, including if cancellation interrupted a write or read.
             writer.transport.abort()
     except (OSError, h11.ProtocolError, ValueError, RecursionError):
-        return "unknown", "", False
+        return "unknown", "", False, False
     if isinstance(result, dict):
         status, output = result.get("status"), result.get("output", "")
         truncated = result.get("truncated", False)
+        capture_incomplete = result.get("capture_incomplete", False)
+        if status == "partial" and type(capture_incomplete) is bool:
+            status, capture_incomplete = "ok", True
         if (
             isinstance(status, str) and status in REPLIES and isinstance(output, str)
-            and type(truncated) is bool
+            and type(truncated) is bool and type(capture_incomplete) is bool
             and not any(0xD800 <= ord(char) <= 0xDFFF for char in output)
         ):
-            return status, output, truncated
-    return "unknown", "", False
+            return status, output, truncated, capture_incomplete
+    return "unknown", "", False, False
 
 
 async def upload_output(bot: Bot, group_id: int, request_id: str, output: str) -> bool:
@@ -183,28 +186,28 @@ async def handle_sudo(bot: Bot, event: GroupMessageEvent) -> None:
         }
         try:
             async with asyncio.timeout(SUDO_TIMEOUT) as wait:
-                status, output, truncated = await submit(settings.bot_token, payload)
+                status, output, truncated, capture_incomplete = await submit(settings.bot_token, payload)
                 if status == "unknown":
                     # A broken HTTP response cannot tell us whether the plugin executed.
                     await asyncio.sleep(max(0, wait.when() - asyncio.get_running_loop().time()))
-                    status, output, truncated = "timeout", "", False
+                    status, output, truncated, capture_incomplete = "timeout", "", False, False
         except TimeoutError:
-            status, output, truncated = "timeout", "", False
+            status, output, truncated, capture_incomplete = "timeout", "", False, False
         logger.info("/sudo #{} qq={} result={}", request_id, event.user_id, status)
         text = "".join(
             char for char in output if char in "\r\n\t" or unicodedata.category(char) not in {"Cc", "Cs"}
         )
         if truncated or (output and not text.strip()) or output_settings.use_file(output):
             if await upload_output(bot, event.group_id, request_id, output):
-                if status == "partial":
-                    await sudo.finish(MessageSegment.text(REPLIES[status]))
+                if capture_incomplete:
+                    await sudo.finish(MessageSegment.text(CAPTURE_INCOMPLETE))
                 return
             await sudo.finish(MessageSegment.text(f"结果文件上传失败或未确认。请求编号：{request_id}"))
             return
         if not text.strip():
-            text = REPLIES[status]
-        elif status == "partial":
-            if not text.endswith("\n"):
+            text = "" if status == "ok" and capture_incomplete else REPLIES[status]
+        if capture_incomplete:
+            if text and not text.endswith("\n"):
                 text += "\n"
-            text += REPLIES[status]
+            text += CAPTURE_INCOMPLETE
         await sudo.finish(MessageSegment.text(text))

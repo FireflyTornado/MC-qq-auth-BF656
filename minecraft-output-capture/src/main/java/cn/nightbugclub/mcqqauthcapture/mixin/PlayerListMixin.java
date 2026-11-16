@@ -15,6 +15,14 @@ abstract class PlayerListMixin {
     }, at = @At("HEAD"))
     private void mcqqauth$captureBroadcast(@Coerce Object message, @Coerce Object source,
                                           @Coerce Object chatType, CallbackInfo callback) {
-        OutputCapture.broadcast(message, chatType);
+        OutputCapture.beginBroadcast(message, chatType);
+    }
+
+    @Inject(method = {
+            "m_243063_(Lnet/minecraft/network/chat/PlayerChatMessage;Lnet/minecraft/commands/CommandSourceStack;Lnet/minecraft/network/chat/ChatType$Bound;)V",
+            "broadcastChatMessage(Lnet/minecraft/network/chat/PlayerChatMessage;Lnet/minecraft/commands/CommandSourceStack;Lnet/minecraft/network/chat/ChatType$Bound;)V"
+    }, at = @At("RETURN"))
+    private void mcqqauth$endBroadcast(CallbackInfo callback) {
+        OutputCapture.endBroadcast();
     }
 }

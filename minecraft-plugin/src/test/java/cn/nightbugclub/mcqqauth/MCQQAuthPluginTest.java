@@ -93,8 +93,8 @@ class MCQQAuthPluginTest {
         RemoteConsoleCommandSender remote = admin(RemoteConsoleCommandSender.class);
         try (var services = mockConstruction(AuthorizationService.class);
              var feedback = mockConstruction(MohistCommandFeedback.class, (capture, context) ->
-                    when(capture.open()).thenReturn(new MohistCommandFeedback.Capture(
-                            remote, new BoundedCommandOutput()::snapshot)));
+                    when(capture.open()).thenAnswer(call -> new MohistCommandFeedback.Capture(
+                            remote, new BoundedCommandOutput())));
              var channels = mockConstruction(SudoChannel.class,
                 (channel, context) -> commands.add((SudoCommands) context.arguments().get(1)))) {
             Path allowlist = dataFolder.resolve(SudoCommands.ALLOWLIST_FILE);

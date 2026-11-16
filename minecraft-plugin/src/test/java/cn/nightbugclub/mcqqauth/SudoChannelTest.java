@@ -136,12 +136,32 @@ class SudoChannelTest {
             assertTrue(peer.replies.isEmpty());
             peer.send(2);
             assertEquals("busy", peer.status());
-            result.complete(new SudoCommands.Result("partial", "some output\n"));
-            assertEquals("partial", peer.status());
+            result.complete(new SudoCommands.Result("ok", "some output\n", false, true));
+            var reply = JsonParser.parseString(peer.replies.remove()).getAsJsonObject();
+            assertEquals("ok", reply.get("status").getAsString());
+            assertTrue(reply.get("capture_incomplete").getAsBoolean());
 
             peer.send(3);
             fixture.tasks.remove().run();
             assertEquals("ok", peer.status());
+        }
+    }
+
+    @Test
+    void disconnectCancelsOutputCollectionAndReleasesTheSlot() {
+        try (var fixture = new ChannelFixture()) {
+            var peer = fixture.connect();
+            var collection = new CompletableFuture<SudoCommands.Result>();
+            when(fixture.commands.execute(eq("test1"), anyLong())).thenReturn(collection);
+            peer.send(1);
+            fixture.tasks.remove().run();
+            peer.disconnect();
+            assertTrue(collection.isCancelled());
+            var next = fixture.openNext(1000);
+            next.send(2);
+            fixture.tasks.remove().run();
+            assertEquals("ok", next.status());
+            assertTrue(peer.replies.isEmpty());
         }
     }
 

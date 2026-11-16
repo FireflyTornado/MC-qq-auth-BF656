@@ -13,6 +13,8 @@ import java.nio.ByteBuffer;
 import java.time.Duration;
 import java.util.LinkedHashMap;
 import java.util.concurrent.CompletionStage;
+import java.util.concurrent.CancellationException;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.ScheduledThreadPoolExecutor;
@@ -107,6 +109,7 @@ final class SudoChannel implements AutoCloseable {
     private Connection active;
     private Request running;
     private boolean executing;
+    private CompletableFuture<SudoCommands.Result> collecting;
     private final RequestHistory history = new RequestHistory();
 
     SudoChannel(Settings settings, SudoCommands commands, Consumer<Runnable> onMain, Logger log,
@@ -193,7 +196,7 @@ final class SudoChannel implements AutoCloseable {
         }
         active = null;
         if (!executing) {
-            running = null;
+            cancelCollection();
         }
         connection.abort();
         int delay = reconnect.nextDelayMs();
@@ -244,14 +247,26 @@ final class SudoChannel implements AutoCloseable {
             return;
         }
         try {
-            commands.execute(request.command, request.deadlineMs - CLOCK_SKEW_MS)
-                    .whenComplete((result, failure) -> finishExecution(source, request, result, failure));
+            var result = commands.execute(request.command, request.deadlineMs - CLOCK_SKEW_MS);
+            synchronized (this) {
+                executing = false;
+                if (active != source) {
+                    running = null;
+                    result.cancel(false);
+                    return;
+                }
+                collecting = result;
+            }
+            result.whenComplete((response, failure) -> finishExecution(source, request, response, failure));
         } catch (RuntimeException e) {
             finishExecution(source, request, null, e);
         }
     }
 
     private void finishExecution(Connection source, Request request, SudoCommands.Result result, Throwable failure) {
+        if (failure instanceof CancellationException) {
+            return;
+        }
         if (failure != null) {
             log.warning("/sudo #" + request.id + " 执行异常（" + failure.getClass().getSimpleName() + "）");
             result = new SudoCommands.Result("error");
@@ -263,7 +278,9 @@ final class SudoChannel implements AutoCloseable {
         if (running == request) {
             running = null;
             executing = false;
-            log.info("/sudo #" + request.id + " result=" + result.status());
+            collecting = null;
+            log.info("/sudo #" + request.id + " result=" + result.status()
+                    + (result.captureIncomplete() ? " capture=incomplete" : ""));
             reply(source, request, result);
         }
     }
@@ -279,6 +296,9 @@ final class SudoChannel implements AutoCloseable {
         if (result.truncated()) {
             response.addProperty("truncated", true);
         }
+        if (result.captureIncomplete()) {
+            response.addProperty("capture_incomplete", true);
+        }
         source.socket.sendText(JSON.toJson(response), true).whenComplete((socket, failure) -> {
             if (failure != null) {
                 disconnect(source, "回执发送失败");
@@ -291,12 +311,21 @@ final class SudoChannel implements AutoCloseable {
         closed = true;
         timer.shutdownNow();
         if (!executing) {
-            running = null;
+            cancelCollection();
         }
         if (active != null) {
             Connection connection = active;
             active = null;
             connection.abort();
+        }
+    }
+
+    private void cancelCollection() {
+        running = null;
+        if (collecting != null) {
+            var task = collecting;
+            collecting = null;
+            task.cancel(false);
         }
     }
 

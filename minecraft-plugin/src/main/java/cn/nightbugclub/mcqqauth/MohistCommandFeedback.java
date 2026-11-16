@@ -25,9 +25,9 @@ final class MohistCommandFeedback {
         CompletableFuture<Boolean> finish();
     }
 
-    record Capture(RemoteConsoleCommandSender sender, Supplier<BoundedCommandOutput.Snapshot> output,
+    record Capture(RemoteConsoleCommandSender sender, BoundedCommandOutput output,
                    Supplier<Session> beginExtendedCapture) {
-        Capture(RemoteConsoleCommandSender sender, Supplier<BoundedCommandOutput.Snapshot> output) {
+        Capture(RemoteConsoleCommandSender sender, BoundedCommandOutput output) {
             this(sender, output, () -> null);
         }
     }
@@ -51,20 +51,22 @@ final class MohistCommandFeedback {
             Access methods = access;
             Object visitor = Proxy.newProxyInstance(methods.visitorType.getClassLoader(),
                     new Class<?>[]{methods.visitorType}, (proxy, method, args) ->
-                            output.append((String) args[0]) ? Optional.of(Boolean.TRUE) : Optional.empty());
+                            output.appendSender((String) args[0]) ? Optional.of(Boolean.TRUE) : Optional.empty());
             Consumer<Object> appendComponent = component -> {
-                if (!output.truncated()) {
-                    visit(methods.visit, component, visitor);
-                    output.append("\n");
+                synchronized (output) {
+                    if (output.acceptingOutput()) {
+                        visit(methods.visit, component, visitor);
+                        output.append("\n");
+                    }
                 }
             };
-            Consumer<String> appendString = output::append;
+            Consumer<String> appendString = output::appendSender;
             // The address is metadata for the sender. No socket or shared RCON session is opened.
             Object source = methods.constructor.newInstance(methods.handle,
                     new InetSocketAddress(InetAddress.getLoopbackAddress(), 0), appendComponent, appendString);
             var sender = Objects.requireNonNull(
                     (RemoteConsoleCommandSender) methods.getSender.invoke(source, methods.createStack.invoke(source)));
-            return new Capture(sender, output::snapshot, () -> begin(methods.beginCapture, output));
+            return new Capture(sender, output, () -> begin(methods.beginCapture, output));
         } catch (ReflectiveOperationException | LinkageError | ClassCastException | NullPointerException e) {
             throw new IllegalStateException("Mohist command feedback is unavailable", e);
         }
@@ -86,11 +88,11 @@ final class MohistCommandFeedback {
                 createStack, getSender, visit, visitor, handle, captureBridge(loader));
     }
 
-    private static Method captureBridge(ClassLoader loader) throws NoSuchMethodException {
+    private static Method captureBridge(ClassLoader loader) {
         try {
             return loader.loadClass("cn.nightbugclub.mcqqauthcapture.OutputCapture")
                     .getMethod("begin", Consumer.class);
-        } catch (ClassNotFoundException e) {
+        } catch (ClassNotFoundException | NoSuchMethodException | LinkageError e) {
             return null;
         }
     }
@@ -100,12 +102,12 @@ final class MohistCommandFeedback {
         if (bridge == null) {
             return null;
         }
-        Consumer<String> appendLine = text -> output.appendLine(text);
+        Consumer<String> appendLine = output::appendLine;
         try {
             var scope = (Supplier<CompletableFuture<Boolean>>) bridge.invoke(null, appendLine);
             return scope::get;
         } catch (ReflectiveOperationException | LinkageError | ClassCastException e) {
-            return () -> CompletableFuture.completedFuture(false);
+            throw new IllegalStateException("Extended command feedback is unavailable", e);
         }
     }
 
